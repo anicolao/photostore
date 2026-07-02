@@ -305,5 +305,6 @@ nix develop --command sh -c 'cd web && bun run test:e2e:install'
 nix develop --command sh -c 'cd web && bun run test:e2e'
 ```
 
-The implementation PR that adds the UI should also add GitHub Actions wiring for
-these commands.
+The GitHub Actions workflow in `.github/workflows/ci.yml` runs these commands on
+macOS for pull requests. It runs `bun run test:e2e` without snapshot update mode,
+so committed screenshots must already match pixel for pixel.

@@ -1,0 +1,50 @@
+name: CI
+
+"on":
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Go and E2E Tests
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Go tests
+        run: nix develop --command go test ./...
+
+      - name: Install web dependencies
+        run: nix develop --command sh -c 'cd web && bun install --frozen-lockfile'
+
+      - name: Check web types
+        run: nix develop --command sh -c 'cd web && bun run check'
+
+      - name: Build web UI
+        run: nix develop --command sh -c 'cd web && bun run build'
+
+      - name: Install Playwright browser
+        run: nix develop --command sh -c 'cd web && bun run test:e2e:install'
+
+      - name: Run E2E tests
+        run: nix develop --command sh -c 'cd web && bun run test:e2e'
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore
