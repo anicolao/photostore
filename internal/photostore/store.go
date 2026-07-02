@@ -652,11 +652,15 @@ func (s *Store) initSchema() error {
 		`create table if not exists content_metadata(content_ref text, extractor_name text, extractor_version integer, metadata_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, extracted_at_ms integer, fields_json text, warnings_json text, primary key(content_ref, extractor_name, extractor_version))`,
 		`create table if not exists content_metadata_failures(content_ref text, extractor_name text, extractor_version integer, failure_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, failed_at_ms integer, error_json text, primary key(content_ref, extractor_name, extractor_version))`,
 		`create table if not exists metadata_issues(issue_event_id text primary key, content_ref text, stored_object_id text, source_occurrence_id text, scan_id text, extractor_name text, extractor_version integer, detected_at_ms integer, issue_type text, severity text, details_json text)`,
+		`create table if not exists photo_capture_times(stored_object_id text primary key, content_ref text, source_occurrence_id text, scan_id text, filename text, relative_path text, capture_date text, capture_time_local text, utc_offset text, precision text, source_kind text, source_event_id text, extractor_name text, extractor_version integer, reducer_name text, reducer_version integer, raw_value text)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.DB.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	if err := s.rebuildPhotoCaptureTimeProjection(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -757,6 +761,9 @@ func (s *Store) applyEvent(ev Event) error {
 	case "PhotoMetadataExtracted":
 		extractor := mapValue(ev.Payload["extractor"])
 		_, err = tx.Exec(`insert or ignore into content_metadata values(?,?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["extracted_at_ms"]), pj("fields"), pj("warnings"))
+		if err == nil {
+			err = reducePhotoCaptureTime(tx, ev, extractor)
+		}
 	case "PhotoMetadataExtractionFailed":
 		extractor := mapValue(ev.Payload["extractor"])
 		_, err = tx.Exec(`insert or ignore into content_metadata_failures values(?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["failed_at_ms"]), pj("error"))

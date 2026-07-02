@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +69,36 @@ type AcquiredFileProjection struct {
 	ContentRef         string `json:"content_ref"`
 	ViewURL            string `json:"view_url"`
 	ThumbnailURL       string `json:"thumbnail_url"`
+}
+
+type PhotoDateBucket struct {
+	BucketKey    string `json:"bucket_key"`
+	DisplayLabel string `json:"display_label"`
+	PhotoCount   int    `json:"photo_count"`
+}
+
+type PhotoDateBucketResponse struct {
+	BucketKind string            `json:"bucket_kind"`
+	BucketKey  string            `json:"bucket_key"`
+	Buckets    []PhotoDateBucket `json:"buckets"`
+}
+
+type DatedPhotoProjection struct {
+	StoredObjectID   string `json:"stored_object_id"`
+	ContentRef       string `json:"content_ref"`
+	Filename         string `json:"filename"`
+	RelativePath     string `json:"relative_path"`
+	CaptureDate      string `json:"capture_date,omitempty"`
+	CaptureTimeLocal string `json:"capture_time_local,omitempty"`
+	UTCOffset        string `json:"utc_offset,omitempty"`
+	Precision        string `json:"precision,omitempty"`
+	ViewURL          string `json:"view_url"`
+	ThumbnailURL     string `json:"thumbnail_url"`
+}
+
+type DatedPhotoResponse struct {
+	BucketKey string                 `json:"bucket_key"`
+	Photos    []DatedPhotoProjection `json:"photos"`
 }
 
 func (s *Store) Summary() (StoreSummary, error) {
@@ -301,6 +332,140 @@ func (s *Store) AcquiredFiles(scanID string) ([]AcquiredFileProjection, error) {
 		out = append(out, file)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) PhotoYears() (PhotoDateBucketResponse, error) {
+	buckets, err := s.photoDateBuckets("year", "")
+	return PhotoDateBucketResponse{BucketKind: "year", Buckets: buckets}, err
+}
+
+func (s *Store) PhotoMonths(year string) (PhotoDateBucketResponse, error) {
+	buckets, err := s.photoDateBuckets("month", year)
+	return PhotoDateBucketResponse{BucketKind: "month", BucketKey: year, Buckets: buckets}, err
+}
+
+func (s *Store) PhotoDays(year, month string) (PhotoDateBucketResponse, error) {
+	key := year + "-" + month
+	buckets, err := s.photoDateBuckets("day", key)
+	return PhotoDateBucketResponse{BucketKind: "day", BucketKey: key, Buckets: buckets}, err
+}
+
+func (s *Store) DatedPhotos(year, month, day string) (DatedPhotoResponse, error) {
+	key := year + "-" + month + "-" + day
+	photos, err := s.photosForCaptureDate(key)
+	return DatedPhotoResponse{BucketKey: key, Photos: photos}, err
+}
+
+func (s *Store) UndatedPhotos() (DatedPhotoResponse, error) {
+	rows, err := s.DB.Query(`
+		select scl.content_ref,
+			min(scl.stored_object_id),
+			min(coalesce(so.relative_path, '')),
+			min(coalesce(so.path, ''))
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		left join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+		where st.purpose = 'source_media'
+			and not exists (select 1 from photo_capture_times pct where pct.content_ref = scl.content_ref)
+		group by scl.content_ref
+		order by min(coalesce(so.relative_path, so.path))`)
+	if err != nil {
+		return DatedPhotoResponse{}, err
+	}
+	defer rows.Close()
+	var photos []DatedPhotoProjection
+	for rows.Next() {
+		var photo DatedPhotoProjection
+		var path string
+		if err := rows.Scan(&photo.ContentRef, &photo.StoredObjectID, &photo.RelativePath, &path); err != nil {
+			return DatedPhotoResponse{}, err
+		}
+		photo.Filename = filenameForProjection(photo.RelativePath, path)
+		photo.ViewURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
+		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
+		photos = append(photos, photo)
+	}
+	return DatedPhotoResponse{BucketKey: "undated", Photos: photos}, rows.Err()
+}
+
+func (s *Store) photoDateBuckets(kind, prefix string) ([]PhotoDateBucket, error) {
+	var expr string
+	var where string
+	var args []any
+	switch kind {
+	case "year":
+		expr = `substr(capture_date, 1, 4)`
+	case "month":
+		expr = `substr(capture_date, 1, 7)`
+		where = `where substr(capture_date, 1, 4) = ?`
+		args = append(args, prefix)
+	case "day":
+		expr = `capture_date`
+		where = `where substr(capture_date, 1, 7) = ?`
+		args = append(args, prefix)
+	default:
+		return nil, fmt.Errorf("unsupported photo date bucket kind %q", kind)
+	}
+	rows, err := s.DB.Query(fmt.Sprintf(`select %s as bucket_key, count(*) from photo_capture_times %s group by bucket_key order by bucket_key desc`, expr, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var buckets []PhotoDateBucket
+	for rows.Next() {
+		var bucket PhotoDateBucket
+		if err := rows.Scan(&bucket.BucketKey, &bucket.PhotoCount); err != nil {
+			return nil, err
+		}
+		bucket.DisplayLabel = photoBucketLabel(kind, bucket.BucketKey)
+		buckets = append(buckets, bucket)
+	}
+	return buckets, rows.Err()
+}
+
+func (s *Store) photosForCaptureDate(captureDate string) ([]DatedPhotoProjection, error) {
+	rows, err := s.DB.Query(`
+		select stored_object_id, content_ref, filename, relative_path, capture_date, capture_time_local, utc_offset, precision
+		from photo_capture_times
+		where capture_date = ?
+		order by capture_time_local, filename`, captureDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var photos []DatedPhotoProjection
+	for rows.Next() {
+		var photo DatedPhotoProjection
+		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.Filename, &photo.RelativePath, &photo.CaptureDate, &photo.CaptureTimeLocal, &photo.UTCOffset, &photo.Precision); err != nil {
+			return nil, err
+		}
+		photo.ViewURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
+		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
+		photos = append(photos, photo)
+	}
+	return photos, rows.Err()
+}
+
+func photoBucketLabel(kind, key string) string {
+	switch kind {
+	case "year":
+		return key
+	case "month":
+		if len(key) == 7 {
+			return key[:4] + "-" + key[5:7]
+		}
+	case "day":
+		return key
+	}
+	return key
+}
+
+func filenameForProjection(relativePath, path string) string {
+	filename := filepath.Base(relativePath)
+	if filename == "." || filename == string(filepath.Separator) || filename == "" {
+		filename = filepath.Base(path)
+	}
+	return filename
 }
 
 type StoredObjectFile struct {

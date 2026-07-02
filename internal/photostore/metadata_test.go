@@ -61,6 +61,36 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	if strings.Contains(fieldsJSON, "parsed") {
 		t.Fatalf("metadata event contains parsed reducer data: %s", fieldsJSON)
 	}
+	var captureDate string
+	var captureTime string
+	var offset string
+	if err := st.DB.QueryRow(`select capture_date, capture_time_local, utc_offset from photo_capture_times`).Scan(&captureDate, &captureTime, &offset); err != nil {
+		t.Fatal(err)
+	}
+	if captureDate != "2012-07-04" {
+		t.Fatalf("capture date = %q, want reducer date", captureDate)
+	}
+	if captureTime != "2012-07-04T18:22:11" {
+		t.Fatalf("capture time = %q, want reducer local timestamp", captureTime)
+	}
+	if offset != "-04:00" {
+		t.Fatalf("capture offset = %q, want EXIF offset", offset)
+	}
+
+	years, err := st.PhotoYears()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(years.Buckets) != 1 || years.Buckets[0].BucketKey != "2012" || years.Buckets[0].PhotoCount != 1 {
+		t.Fatalf("year buckets = %#v, want one 2012 unique content bucket", years.Buckets)
+	}
+	photos, err := st.DatedPhotos("2012", "07", "04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(photos.Photos) != 1 || photos.Photos[0].Filename != "A.JPG" {
+		t.Fatalf("dated photos = %#v, want representative A.JPG", photos.Photos)
+	}
 }
 
 func TestRefreshMissingMetadataRecordsFailureOnce(t *testing.T) {
