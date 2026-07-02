@@ -56,6 +56,18 @@ type HistoricalInventoryProjection struct {
 	Group          string `json:"group"`
 }
 
+type AcquiredFileProjection struct {
+	SourceOccurrenceID string `json:"source_occurrence_id"`
+	StoredObjectID     string `json:"stored_object_id"`
+	SourceKind         string `json:"source_kind"`
+	SourceRootID       string `json:"source_root_id,omitempty"`
+	Path               string `json:"path"`
+	RelativePath       string `json:"relative_path"`
+	ScanID             string `json:"scan_id"`
+	ContentRef         string `json:"content_ref"`
+	ViewURL            string `json:"view_url"`
+}
+
 func (s *Store) Summary() (StoreSummary, error) {
 	summary := StoreSummary{StorePath: s.Root}
 	queries := []struct {
@@ -252,4 +264,61 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 		events = append(events, ev)
 	}
 	return events, nil
+}
+
+func (s *Store) AcquiredFiles(scanID string) ([]AcquiredFileProjection, error) {
+	rows, err := s.DB.Query(`
+		select so.source_occurrence_id,
+			coalesce(so.stored_object_id, ''),
+			so.source_kind,
+			coalesce(so.source_root_id, ''),
+			so.path,
+			so.relative_path,
+			so.scan_id,
+			coalesce(scl.content_ref, '')
+		from source_occurrences so
+		left join source_content_links scl on scl.source_occurrence_id = so.source_occurrence_id
+		where so.scan_id = ? and so.stored_object_id is not null
+		order by so.relative_path, so.path`, scanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AcquiredFileProjection
+	for rows.Next() {
+		var file AcquiredFileProjection
+		if err := rows.Scan(&file.SourceOccurrenceID, &file.StoredObjectID, &file.SourceKind, &file.SourceRootID, &file.Path, &file.RelativePath, &file.ScanID, &file.ContentRef); err != nil {
+			return nil, err
+		}
+		file.ViewURL = "/api/objects/" + file.StoredObjectID + "/bytes"
+		out = append(out, file)
+	}
+	return out, rows.Err()
+}
+
+type StoredObjectFile struct {
+	Path         string
+	OriginalPath string
+}
+
+func (s *Store) StoredObjectFile(storedObjectID string) (StoredObjectFile, error) {
+	var key string
+	var originalPath string
+	err := s.DB.QueryRow(`select acquired_storage_key, original_path from stored_objects where stored_object_id = ?`, storedObjectID).Scan(&key, &originalPath)
+	if err != nil {
+		return StoredObjectFile{}, err
+	}
+	clean := filepath.Clean(filepath.FromSlash(key))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || filepath.IsAbs(clean) {
+		return StoredObjectFile{}, errors.New("stored object path escapes store root")
+	}
+	path := filepath.Join(s.Root, clean)
+	rel, err := filepath.Rel(s.Root, path)
+	if err != nil {
+		return StoredObjectFile{}, err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return StoredObjectFile{}, errors.New("stored object path escapes store root")
+	}
+	return StoredObjectFile{Path: path, OriginalPath: originalPath}, nil
 }

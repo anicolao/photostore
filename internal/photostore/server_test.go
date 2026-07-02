@@ -51,6 +51,25 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if report.DuplicateAcquisitions != 1 {
 		t.Fatalf("duplicate acquisitions = %d, want 1", report.DuplicateAcquisitions)
 	}
+	var acquired []AcquiredFileProjection
+	getJSON(t, ts.URL+"/api/scans/"+*done.ResultRef+"/acquired", &acquired)
+	if len(acquired) != 2 {
+		t.Fatalf("acquired files = %d, want 2", len(acquired))
+	}
+	if acquired[0].ViewURL == "" {
+		t.Fatalf("missing view url in acquired file: %#v", acquired[0])
+	}
+	res, err := http.Get(ts.URL + acquired[0].ViewURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("object bytes status = %d, want 200", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("content type = %q, want image/jpeg", got)
+	}
 	var scans []ScanProjection
 	getJSON(t, ts.URL+"/api/scans", &scans)
 	if len(scans) != 1 || scans[0].ScanID != *done.ResultRef {

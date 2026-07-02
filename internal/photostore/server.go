@@ -65,6 +65,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/scans", s.handleScans)
 	s.mux.HandleFunc("POST /api/scans", s.handleStartSourceScan)
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/report", s.handleScanReport)
+	s.mux.HandleFunc("GET /api/scans/{scan_id}/acquired", s.handleScanAcquiredFiles)
+	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
 	s.mux.HandleFunc("GET /api/inventories", s.handleInventories)
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
@@ -154,6 +156,26 @@ func (s *Server) handleScanReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Server) handleScanAcquiredFiles(w http.ResponseWriter, r *http.Request) {
+	files, err := s.store.AcquiredFiles(r.PathValue("scan_id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, files)
+}
+
+func (s *Server) handleStoredObjectBytes(w http.ResponseWriter, r *http.Request) {
+	file, err := s.store.StoredObjectFile(r.PathValue("stored_object_id"))
+	if err != nil {
+		writeErrorStatus(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Type", contentTypeForPath(file.OriginalPath))
+	w.Header().Set("Content-Disposition", "inline")
+	http.ServeFile(w, r, file.Path)
 }
 
 func (s *Server) handleInventories(w http.ResponseWriter, r *http.Request) {
@@ -281,6 +303,10 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	if serveBuildFile(w, r) {
 		return
 	}
+	if r.URL.Path != "/" {
+		r = r.Clone(r.Context())
+		r.URL.Path = "/"
+	}
 	fsys, _ := fs.Sub(fallbackStatic, "static")
 	http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 }
@@ -323,4 +349,14 @@ func writeError(w http.ResponseWriter, err error) {
 
 func writeErrorStatus(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": fmt.Sprint(err)})
+}
+
+func contentTypeForPath(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	default:
+		return "application/octet-stream"
+	}
 }
