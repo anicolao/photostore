@@ -116,6 +116,9 @@ func Open(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := requireInitialized(abs); err != nil {
+		return nil, err
+	}
 	db, err := sql.Open("sqlite", filepath.Join(abs, "projections.sqlite3"))
 	if err != nil {
 		return nil, err
@@ -126,6 +129,26 @@ func Open(root string) (*Store, error) {
 		return nil, err
 	}
 	return st, nil
+}
+
+func requireInitialized(root string) error {
+	required := []string{
+		filepath.Join(root, "events"),
+		filepath.Join(root, "objects", "acquired"),
+		filepath.Join(root, "cas", "sha256", "v1"),
+		filepath.Join(root, "tmp"),
+		filepath.Join(root, "reports"),
+	}
+	for _, path := range required {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("store is not initialized at %s; run `photostore init --store %s` first", root, root)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("store is not initialized at %s; %s is not a directory", root, path)
+		}
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
