@@ -24,6 +24,10 @@ test('dashboard loads and scans a source root', async ({ page }) => {
 
   await page.getByTestId('source-list').getByRole('button', { name: 'Scan' }).click();
   await expect(page.getByTestId('job-status')).toContainText('completed', { timeout: 10_000 });
+  await expect(page.getByTestId('job-latest-progress')).toBeVisible();
+  await expect(page.getByTestId('job-log')).toHaveCount(0);
+  await page.getByTestId('toggle-job-log').click();
+  await expect(page.getByTestId('job-log')).toContainText('acquiring');
   await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never');
   await expect(page.getByTestId('scan-table')).toContainText('completed');
   await expect(page.getByTestId('scan-table')).toContainText('2');
