@@ -148,10 +148,14 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 **Verifications:**
 - [x] Metadata heading is visible
 - [x] One unique content item has extracted metadata
-- [x] One photo has no metadata found
+- [x] Three photos have no metadata found
 - [x] No current extractor work remains unscanned
 - [x] Failed metadata list identifies bad.JPG
+- [x] Main metadata failure list keeps the large no-EXIF photo visible
+- [x] Main metadata failure list hides the small crop by default
+- [x] Small metadata failures are collapsed with a count
 - [x] Failed metadata list shows the extraction error
+- [x] Opening likely thumbnails or crops reveals crop.JPG
 - [x] Unscanned metadata empty state is visible
 
 ---

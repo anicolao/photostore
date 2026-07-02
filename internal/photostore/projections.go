@@ -123,6 +123,9 @@ type MetadataPhotoProjection struct {
 	RelativePath   string `json:"relative_path"`
 	Status         string `json:"status"`
 	ErrorMessage   string `json:"error_message,omitempty"`
+	Width          int    `json:"width,omitempty"`
+	Height         int    `json:"height,omitempty"`
+	PixelCount     int    `json:"pixel_count,omitempty"`
 	ViewURL        string `json:"view_url"`
 	ThumbnailURL   string `json:"thumbnail_url"`
 }
@@ -575,8 +578,10 @@ func (s *Store) MetadataFailures() ([]MetadataPhotoProjection, error) {
 			cmf.content_ref,
 			coalesce(so.relative_path, ''),
 			coalesce(so.path, ''),
-			cmf.error_json
+			cmf.error_json,
+			st.acquired_storage_key
 		from content_metadata_failures cmf
+		join stored_objects st on st.stored_object_id = cmf.stored_object_id
 		left join source_occurrences so on so.source_occurrence_id = cmf.source_occurrence_id
 		where cmf.extractor_name = ? and cmf.extractor_version = ?
 		order by coalesce(so.relative_path, so.path), cmf.stored_object_id`, metadataExtractorName, metadataExtractorVersion)
@@ -589,12 +594,15 @@ func (s *Store) MetadataFailures() ([]MetadataPhotoProjection, error) {
 		var photo MetadataPhotoProjection
 		var path string
 		var errorJSON string
-		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.RelativePath, &path, &errorJSON); err != nil {
+		var storageKey string
+		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.RelativePath, &path, &errorJSON, &storageKey); err != nil {
 			return nil, err
 		}
 		photo.Filename = filenameForProjection(photo.RelativePath, path)
 		photo.Status = "failed"
 		photo.ErrorMessage = errorMessageFromJSON(errorJSON)
+		photo.Width, photo.Height = s.dimensionsForStorageKey(storageKey)
+		photo.PixelCount = photo.Width * photo.Height
 		photo.ViewURL = "/objects/" + photo.StoredObjectID
 		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
 		photos = append(photos, photo)
@@ -654,6 +662,15 @@ func errorMessageFromJSON(raw string) string {
 		return raw
 	}
 	return payload.Message
+}
+
+func (s *Store) dimensionsForStorageKey(storageKey string) (int, int) {
+	path := filepath.Join(s.Root, filepath.FromSlash(storageKey))
+	width, height, err := jpegDimensions(path)
+	if err != nil {
+		return 0, 0
+	}
+	return width, height
 }
 
 type StoredObjectFile struct {
