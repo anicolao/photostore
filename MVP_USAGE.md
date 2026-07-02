@@ -68,10 +68,10 @@ go run ./cmd/photostore source add \
 Run a scan:
 
 ```sh
-go run ./cmd/photostore scan --store ./photostore-data
+go run ./cmd/photostore scan --store ./photostore-data --verbose
 ```
 
-The command prints a `scan_...` id.
+The command prints progress to stderr. It prints a `scan_...` id and, with `--verbose`, prints the final report automatically.
 
 Show the report:
 
@@ -104,12 +104,24 @@ go run ./cmd/photostore inventory scan \
   --type toc \
   --ext .jpg \
   --ext .jpeg \
-  --resolver-root /path/to/restored/Media
+  --resolver-root /path/to/restored/Media \
+  --verbose
 ```
 
 During inventory scans, Photostore first checks the projection of already seen content by trusted historical hash. If a matching hash is already present, it emits a compact link event and skips resolving/copying that historical path.
 
 Only entries whose trusted hash is not already seen are resolved to files and acquired.
+
+## Duplicate Garbage Reporting
+
+Acquisition retains duplicate bytes until a later verifier/deduplicator recomputes hashes and performs a byte-for-byte comparison.
+
+Scan reports include:
+
+- `duplicate_acquisitions`
+- `duplicate_garbage_bytes`
+
+These numbers estimate the retained duplicate data created by the scan.
 
 ## Current Limits
 
