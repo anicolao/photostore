@@ -1,6 +1,5 @@
 import { expect, test } from '@playwright/test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { TestStepHelper } from '../helpers/test-step-helper';
 
 test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
@@ -17,12 +16,12 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     ]
   });
 
-  const source = join(process.cwd(), '.e2e-source');
+  const source = '/tmp/photostore-e2e-source';
   rmSync(source, { recursive: true, force: true });
   mkdirSync(source, { recursive: true });
-  writeFileSync(join(source, 'A.JPG'), 'same');
-  writeFileSync(join(source, 'B.jpeg'), 'same');
-  writeFileSync(join(source, 'notes.txt'), 'not media');
+  writeFileSync(`${source}/A.JPG`, 'same');
+  writeFileSync(`${source}/B.jpeg`, 'same');
+  writeFileSync(`${source}/notes.txt`, 'not media');
 
   await page.getByTestId('source-path-input').fill(source);
   await page.getByTestId('source-label-input').fill('fixture');

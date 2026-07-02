@@ -286,10 +286,11 @@ Before updating screenshots:
 Keep animations disabled or behind `prefers-reduced-motion` so screenshots are
 stable.
 
-Dynamic values such as generated ids or scan timestamps should be avoided in
-screenshots where possible. If they must appear, mark only the exact dynamic
-text with `data-screenshot-mask` and have `TestStepHelper` mask that locator
-while preserving zero-pixel validation for the rest of the viewport.
+Do not mask dynamic values in screenshots. Make generated ids, fixture paths,
+clocks, and other date sources deterministic in the E2E harness instead. Dates
+and timestamps shown to users must remain visible in the committed screenshots
+and must be validated through the same screenshot comparison as the rest of the
+viewport.
 
 ## CI Commands
 
