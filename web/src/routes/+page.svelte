@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { addSource, getInventories, getJobs, getScans, getSources, getStore, refreshMissingMetadata, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
+  import { addSource, deduplicateDuplicates, getInventories, getJobs, getScans, getSources, getStore, refreshMissingMetadata, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
   import type { HistoricalInventory, Job, ScanProjection, ServerEvent, SourceRoot, StoreSummary } from '$lib/types';
 
   let store: StoreSummary | null = null;
@@ -210,6 +210,10 @@
     await runScan(refreshMissingMetadata);
   }
 
+  async function deduplicate() {
+    await runScan(deduplicateDuplicates);
+  }
+
   function formatBytes(bytes: number) {
     return new Intl.NumberFormat('en-CA').format(bytes);
   }
@@ -299,6 +303,7 @@
       <a class="button-link" data-testid="photos-by-date-link" href="/photos/dates">Photos by date</a>
       <a class="button-link" data-testid="metadata-link" href="/metadata">Metadata</a>
       <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={runningJobActive}>Refresh metadata</button>
+      <button data-testid="deduplicate-duplicates" on:click={deduplicate} disabled={runningJobActive || (store?.retained_duplicate_bytes ?? 0) === 0}>Deduplicate</button>
       <button on:click={() => refresh(true)} disabled={loading}>Refresh</button>
     </div>
   </header>

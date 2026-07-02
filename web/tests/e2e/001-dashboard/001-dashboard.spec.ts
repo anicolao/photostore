@@ -72,6 +72,17 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     ]
   });
 
+  await page.getByTestId('deduplicate-duplicates').click();
+  await tester.step('duplicates-deduplicated', {
+    description: 'The dashboard verifies retained duplicates and releases duplicate bytes.',
+    verifications: [
+      { spec: 'Deduplication job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('duplicate_deduplication: completed', { timeout: 10_000 }) },
+      { spec: 'Deduplication progress reports released bytes', check: async () => await expect(page.getByTestId('job-latest-progress')).toContainText('bytes released') },
+      { spec: 'Retained duplicate bytes drop to zero', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('0') },
+      { spec: 'Deduplicate button disables when no duplicate bytes remain', check: async () => await expect(page.getByTestId('deduplicate-duplicates')).toBeDisabled() }
+    ]
+  });
+
   await page.getByTestId('scan-table').getByRole('button', { name: 'Status' }).click();
   await tester.step('scan-status-selected-from-table', {
     description: 'A scan row can restore its job status into the status panel.',

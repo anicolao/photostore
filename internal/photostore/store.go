@@ -771,6 +771,8 @@ func (s *Store) applyEvent(ev Event) error {
 		extractor := mapValue(ev.Payload["extractor"])
 		issue := mapValue(ev.Payload["issue"])
 		_, err = tx.Exec(`insert or ignore into metadata_issues values(?,?,?,?,?,?,?,?,?,?,?)`, ev.EventID, str(ev.Payload["content_ref"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), str(extractor["name"]), int64Value(extractor["version"]), int64Value(ev.Payload["detected_at_ms"]), str(issue["type"]), str(issue["severity"]), mustJSON(ev.Payload))
+	case "DuplicateSourceObjectDeduplicated":
+		_, err = tx.Exec(`update source_content_links set acquired_object_retained = 0 where source_occurrence_id = ?`, str(ev.Payload["source_occurrence_id"]))
 	}
 	if err != nil {
 		return err
