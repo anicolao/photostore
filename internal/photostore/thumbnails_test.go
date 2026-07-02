@@ -1,0 +1,113 @@
+package photostore
+
+import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestWriteJPEGThumbnailAppliesEXIFOrientation(t *testing.T) {
+	root := t.TempDir()
+	srcPath := filepath.Join(root, "oriented.jpg")
+	dstPath := filepath.Join(root, "thumb.jpg")
+	jpegBytes := jpegWithEXIFOrientation(twoColorJPEG(t, 12, 8), 3)
+	if err := os.WriteFile(srcPath, jpegBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJPEGThumbnail(srcPath, dstPath); err != nil {
+		t.Fatal(err)
+	}
+	got := decodeJPEGFile(t, dstPath)
+	r, g, b, _ := got.At(0, 0).RGBA()
+	if b>>8 < 160 || r>>8 > 100 || g>>8 > 100 {
+		t.Fatalf("thumbnail top-left = rgb(%d,%d,%d), want rotated blue source bottom", r>>8, g>>8, b>>8)
+	}
+}
+
+func TestWriteJPEGThumbnailSwapsDimensionsForEXIFRotate90(t *testing.T) {
+	root := t.TempDir()
+	srcPath := filepath.Join(root, "oriented.jpg")
+	dstPath := filepath.Join(root, "thumb.jpg")
+	jpegBytes := jpegWithEXIFOrientation(twoColorJPEG(t, 12, 8), 6)
+	if err := os.WriteFile(srcPath, jpegBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJPEGThumbnail(srcPath, dstPath); err != nil {
+		t.Fatal(err)
+	}
+	got := decodeJPEGFile(t, dstPath)
+	if got.Bounds().Dx() != 8 || got.Bounds().Dy() != 12 {
+		t.Fatalf("thumbnail dimensions = %dx%d, want 8x12", got.Bounds().Dx(), got.Bounds().Dy())
+	}
+}
+
+func TestReadJPEGOrientation(t *testing.T) {
+	orientation, err := readJPEGOrientation(bytes.NewReader(jpegWithEXIFOrientation(twoColorJPEG(t, 8, 8), 8)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orientation != 8 {
+		t.Fatalf("orientation = %d, want 8", orientation)
+	}
+}
+
+func twoColorJPEG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		c := color.RGBA{R: 230, G: 20, B: 20, A: 255}
+		if y >= height/2 {
+			c = color.RGBA{R: 20, G: 20, B: 230, A: 255}
+		}
+		for x := 0; x < width; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func decodeJPEGFile(t *testing.T, path string) image.Image {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := jpeg.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return img
+}
+
+func jpegWithEXIFOrientation(jpegBytes []byte, orientation int) []byte {
+	if len(jpegBytes) < 2 || !bytes.Equal(jpegBytes[:2], []byte{0xff, 0xd8}) {
+		return jpegBytes
+	}
+	payload := []byte{
+		'E', 'x', 'i', 'f', 0, 0,
+		'M', 'M', 0, 42,
+		0, 0, 0, 8,
+		0, 1,
+		0x01, 0x12,
+		0, 3,
+		0, 0, 0, 1,
+		byte(orientation >> 8), byte(orientation), 0, 0,
+		0, 0, 0, 0,
+	}
+	segmentLen := len(payload) + 2
+	out := make([]byte, 0, len(jpegBytes)+len(payload)+4)
+	out = append(out, jpegBytes[:2]...)
+	out = append(out, 0xff, 0xe1, byte(segmentLen>>8), byte(segmentLen))
+	out = append(out, payload...)
+	out = append(out, jpegBytes[2:]...)
+	return out
+}
