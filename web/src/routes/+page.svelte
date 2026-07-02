@@ -1,0 +1,326 @@
+<script lang="ts">
+  import { addSource, getInventories, getJob, getScans, getSources, getStore, startSourceScan } from '$lib/api';
+  import type { HistoricalInventory, Job, ScanProjection, SourceRoot, StoreSummary } from '$lib/types';
+
+  let store: StoreSummary | null = null;
+  let sources: SourceRoot[] = [];
+  let scans: ScanProjection[] = [];
+  let inventories: HistoricalInventory[] = [];
+  let activeJob: Job | null = null;
+  let sourcePath = '';
+  let sourceLabel = '';
+  let error = '';
+  let loading = true;
+
+  async function refresh() {
+    [store, sources, scans, inventories] = await Promise.all([
+      getStore(),
+      getSources(),
+      getScans(),
+      getInventories()
+    ]);
+  }
+
+  async function load() {
+    loading = true;
+    error = '';
+    try {
+      await refresh();
+    } catch (err) {
+      error = String(err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function submitSource() {
+    error = '';
+    await addSource(sourcePath, sourceLabel);
+    sourcePath = '';
+    sourceLabel = '';
+    await refresh();
+  }
+
+  async function scanSources() {
+    error = '';
+    try {
+      activeJob = await startSourceScan();
+      while (activeJob.status === 'running') {
+        await sleep(150);
+        activeJob = await getJob(activeJob.job_id);
+      }
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await refresh();
+        if (!activeJob.result_ref || scans.some((scan) => scan.scan_id === activeJob?.result_ref)) {
+          return;
+        }
+        await sleep(150);
+      }
+    } catch (err) {
+      error = String(err);
+    }
+  }
+
+  function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function formatBytes(bytes: number) {
+    return new Intl.NumberFormat('en-CA').format(bytes);
+  }
+
+  load();
+</script>
+
+<svelte:head>
+  <title>Photostore</title>
+</svelte:head>
+
+<main>
+  <header class="topbar">
+    <div>
+      <h1>Photostore</h1>
+      <p data-testid="store-path">{store?.store_path ?? 'Loading store'}</p>
+    </div>
+    <button on:click={refresh} disabled={loading}>Refresh</button>
+  </header>
+
+  {#if error}
+    <section class="error" data-testid="ui-error">{error}</section>
+  {/if}
+
+  <section class="summary" aria-label="Store status">
+    <div>
+      <span>Events</span>
+      <strong data-testid="event-count">{store?.event_count ?? 0}</strong>
+    </div>
+    <div>
+      <span>Content</span>
+      <strong data-testid="content-count">{store?.content_count ?? 0}</strong>
+    </div>
+    <div>
+      <span>Sources</span>
+      <strong data-testid="source-count">{store?.source_root_count ?? 0}</strong>
+    </div>
+    <div>
+      <span>Duplicate bytes</span>
+      <strong data-testid="duplicate-garbage-bytes">{formatBytes(store?.retained_duplicate_bytes ?? 0)}</strong>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section aria-labelledby="sources-heading">
+      <div class="section-heading">
+        <h2 id="sources-heading">Source roots</h2>
+        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={activeJob?.status === 'running'}>
+          Scan
+        </button>
+      </div>
+      <form data-testid="add-source-form" on:submit|preventDefault={submitSource}>
+        <input data-testid="source-path-input" bind:value={sourcePath} placeholder="Path" aria-label="Source path" required>
+        <input data-testid="source-label-input" bind:value={sourceLabel} placeholder="Label" aria-label="Source label">
+        <button type="submit">Add</button>
+      </form>
+      {#if sources.length === 0}
+        <p class="empty" data-testid="sources-empty">No source roots registered.</p>
+      {:else}
+        <ul class="rows" data-testid="source-list">
+          {#each sources as source}
+            <li>
+              <strong>{source.label}</strong>
+              <code>{source.path}</code>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
+    <section aria-labelledby="job-heading">
+      <h2 id="job-heading">Active job</h2>
+      {#if activeJob}
+        <p data-testid="job-status">{activeJob.kind}: {activeJob.status}</p>
+        {#if activeJob.error}<p class="error">{activeJob.error}</p>{/if}
+        <ul class="rows">
+          {#each activeJob.progress as message}
+            <li>{message}</li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="empty" data-testid="job-empty">No job running.</p>
+      {/if}
+    </section>
+  </div>
+
+  <section aria-labelledby="scans-heading">
+    <h2 id="scans-heading">Recent scans</h2>
+    {#if scans.length === 0}
+      <p class="empty" data-testid="scans-empty">No scans yet.</p>
+    {:else}
+      <table data-testid="scan-table">
+        <thead>
+          <tr>
+            <th>Scan</th>
+            <th>Status</th>
+            <th>Acquired</th>
+            <th>Duplicates</th>
+            <th>Duplicate bytes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each scans as scan}
+            <tr>
+              <td><code>{scan.scan_id}</code></td>
+              <td>{scan.status}</td>
+              <td>{scan.report?.source_files_acquired ?? 0}</td>
+              <td>{scan.report?.duplicate_acquisitions ?? 0}</td>
+              <td>{formatBytes(scan.report?.duplicate_garbage_bytes ?? 0)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </section>
+
+  <section aria-labelledby="inventories-heading">
+    <h2 id="inventories-heading">Historical inventories</h2>
+    {#if inventories.length === 0}
+      <p class="empty" data-testid="inventories-empty">No historical inventories acquired.</p>
+    {:else}
+      <ul class="rows">
+        {#each inventories as inv}
+          <li><strong>{inv.label}</strong><code>{inv.original_path}</code></li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+</main>
+
+<style>
+  main {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 22px;
+  }
+
+  .topbar,
+  .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  h1,
+  h2,
+  p {
+    margin-top: 0;
+  }
+
+  h1 {
+    margin-bottom: 2px;
+    font-size: 26px;
+  }
+
+  h2 {
+    font-size: 18px;
+  }
+
+  .topbar p {
+    margin-bottom: 0;
+    color: #5f6368;
+  }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    margin: 18px 0;
+  }
+
+  .summary div,
+  section {
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .summary div {
+    padding: 14px;
+  }
+
+  .summary span {
+    display: block;
+    color: #5f6368;
+    font-size: 12px;
+  }
+
+  .summary strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 24px;
+  }
+
+  section {
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 16px;
+  }
+
+  form {
+    display: grid;
+    grid-template-columns: 1fr minmax(130px, 180px) auto;
+    gap: 8px;
+  }
+
+  .rows {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+  }
+
+  .rows li {
+    display: grid;
+    gap: 3px;
+    border-top: 1px solid #eef1f5;
+    padding: 9px 0;
+  }
+
+  .empty {
+    color: #5f6368;
+    margin-bottom: 0;
+  }
+
+  .error {
+    border-color: #d93025;
+    color: #a50e0e;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  th,
+  td {
+    border-top: 1px solid #eef1f5;
+    padding: 8px;
+    text-align: left;
+  }
+
+  @media (max-width: 760px) {
+    main {
+      padding: 12px;
+    }
+
+    .summary,
+    .grid,
+    form {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

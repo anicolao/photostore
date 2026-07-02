@@ -26,6 +26,8 @@
               pkgs.go
               pkgs.gopls
               pkgs.gotools
+              pkgs.bun
+              pkgs.nodejs_22
               pkgs.sqlite
               pkgs.git
               pkgs.gh

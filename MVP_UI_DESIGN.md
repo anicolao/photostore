@@ -61,7 +61,7 @@ web/
       003-historical-inventory/
 ```
 
-The development shell should provide Go, Node.js, npm, and Playwright browser
+The development shell should provide Go, Bun, Node.js, and Playwright browser
 dependencies. The existing Nix flake is the right place to add those tools when
 the UI is implemented.
 
@@ -87,8 +87,8 @@ The implementation can use Go `embed` for the built frontend:
 
 ```text
 go generate or release build:
-  npm --prefix web ci
-  npm --prefix web run build
+  cd web && bun install --frozen-lockfile
+  cd web && bun run build
   go build ./cmd/photostore
 ```
 
@@ -96,7 +96,7 @@ For local frontend development, run Vite and Go separately:
 
 ```sh
 photostore serve --store ./photostore-data --addr 127.0.0.1:8080 --api-only
-npm --prefix web run dev
+cd web && bun run dev
 ```
 
 In dev mode, Vite should proxy `/api` to `http://127.0.0.1:8080`.
@@ -229,5 +229,5 @@ The UI MVP is complete when:
 - A user can add a source root and run a JPEG scan from the browser.
 - A user can acquire and scan a historical `.toc` inventory from the browser.
 - Scan reports include duplicate acquisition and duplicate garbage counts.
-- `go test ./...`, frontend checks, and Playwright E2E tests pass in the Nix
-  development shell.
+- `go test ./...`, `cd web && bun run check`, frontend build, and Playwright
+  E2E tests pass in the Nix development shell.

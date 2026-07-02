@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Photostore</title>
+    <style>
+      body { margin: 0; font: 14px/1.45 system-ui, sans-serif; color: #202124; background: #f6f7f9; }
+      main { max-width: 1120px; margin: 0 auto; padding: 24px; }
+      header { display: flex; justify-content: space-between; gap: 16px; align-items: baseline; margin-bottom: 18px; }
+      h1 { font-size: 24px; margin: 0; }
+      section { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 16px; margin: 12px 0; }
+      dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 0; }
+      dt { color: #5f6368; font-size: 12px; }
+      dd { margin: 2px 0 0; font-size: 18px; font-weight: 600; }
+      form { display: grid; grid-template-columns: 1fr 180px auto; gap: 8px; margin-bottom: 12px; }
+      input, button { font: inherit; border: 1px solid #c8ced8; border-radius: 6px; padding: 7px 9px; }
+      button { cursor: pointer; background: #fff; }
+      button.primary { background: #1a73e8; border-color: #1a73e8; color: #fff; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { border-top: 1px solid #eef1f5; padding: 8px; text-align: left; }
+      code { word-break: break-all; }
+      .row { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+      .error { color: #a50e0e; }
+      @media (max-width: 720px) { form { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Photostore</h1>
+        <span id="status">Loading</span>
+      </header>
+      <section>
+        <h2>Store</h2>
+        <dl id="summary"></dl>
+      </section>
+      <section>
+        <div class="row">
+          <h2>Sources</h2>
+          <button class="primary" id="scan">Scan</button>
+        </div>
+        <form id="source-form">
+          <input id="source-path" placeholder="Path" required>
+          <input id="source-label" placeholder="Label">
+          <button>Add</button>
+        </form>
+        <div id="sources"></div>
+      </section>
+      <section>
+        <h2>Active job</h2>
+        <div id="job">No job running.</div>
+      </section>
+      <section>
+        <h2>Recent scans</h2>
+        <div id="scans"></div>
+      </section>
+    </main>
+    <script>
+      async function json(path) {
+        const res = await fetch(path);
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
+      async function post(path, body) {
+        const res = await fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
+      function stat(label, value) {
+        return `<div><dt>${label}</dt><dd>${value}</dd></div>`;
+      }
+      async function load() {
+        const [store, sources, scans] = await Promise.all([
+          json('/api/store'),
+          json('/api/sources'),
+          json('/api/scans')
+        ]);
+        document.querySelector('#status').textContent = 'Ready';
+        document.querySelector('#summary').innerHTML = [
+          stat('Events', store.event_count),
+          stat('Content', store.content_count),
+          stat('Sources', store.source_root_count),
+          stat('Duplicate bytes', store.retained_duplicate_bytes)
+        ].join('');
+        document.querySelector('#sources').innerHTML = sources.length
+          ? sources.map((s) => `<p><strong>${s.label}</strong><br><code>${s.path}</code></p>`).join('')
+          : '<p>No source roots registered.</p>';
+        document.querySelector('#scans').innerHTML = scans.length
+          ? `<table><thead><tr><th>Scan</th><th>Status</th><th>Acquired</th><th>Duplicates</th><th>Duplicate bytes</th></tr></thead><tbody>${scans.map((s) => `<tr><td><code>${s.scan_id}</code></td><td>${s.status}</td><td>${s.report?.source_files_acquired ?? 0}</td><td>${s.report?.duplicate_acquisitions ?? 0}</td><td>${s.report?.duplicate_garbage_bytes ?? 0}</td></tr>`).join('')}</tbody></table>`
+          : '<p>No scans yet.</p>';
+      }
+      async function waitJob(job) {
+        while (job.status === 'running') {
+          document.querySelector('#job').textContent = `${job.kind}: ${job.status}`;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          job = await json(`/api/jobs/${job.job_id}`);
+        }
+        document.querySelector('#job').textContent = `${job.kind}: ${job.status}`;
+        await load();
+      }
+      document.querySelector('#source-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await post('/api/sources', {
+          path: document.querySelector('#source-path').value,
+          label: document.querySelector('#source-label').value
+        });
+        document.querySelector('#source-path').value = '';
+        document.querySelector('#source-label').value = '';
+        await load();
+      });
+      document.querySelector('#scan').addEventListener('click', async () => {
+        await waitJob(await post('/api/scans', {}));
+      });
+      load().catch((err) => {
+        document.querySelector('#status').textContent = err.message;
+        document.querySelector('#status').className = 'error';
+      });
+    </script>
+  </body>
+</html>
