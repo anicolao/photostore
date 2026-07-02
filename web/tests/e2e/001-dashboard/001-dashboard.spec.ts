@@ -7,6 +7,8 @@ const fixtureJPEG = Buffer.from(
   'base64'
 );
 const fixtureJPEGWithEXIF = jpegWithEXIF(fixtureJPEG, [
+  [0x010f, 'Canon'],
+  [0x0110, 'EOS 5D'],
   [0x9003, '2012:07:04 18:22:11'],
   [0x9011, '-04:00']
 ]);
@@ -93,16 +95,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Photo grid lists A.JPG by filename', check: async () => await expect(page.getByTestId('photo-grid')).toContainText('A.JPG') },
       { spec: 'Photo grid does not show the absolute source path', check: async () => await expect(page.getByTestId('photo-grid')).not.toContainText('/tmp/photostore-e2e-source') },
       { spec: 'Generated thumbnails are visible', check: async () => await expect(page.getByTestId('thumbnail-image').first()).toBeVisible() },
-      {
-        spec: 'First acquired file link serves image/jpeg',
-        check: async () => {
-          const imageHref = await page.getByTestId('photo-card').first().getAttribute('href');
-          expect(imageHref).toBeTruthy();
-          const imageResponse = await page.request.get(imageHref!);
-          expect(imageResponse.ok()).toBe(true);
-          expect(imageResponse.headers()['content-type']).toContain('image/jpeg');
-        }
-      },
+      { spec: 'First acquired file opens the image view', check: async () => await expect(page.getByTestId('photo-card').first()).toHaveAttribute('href', /\/objects\//) },
       {
         spec: 'First thumbnail serves image/jpeg',
         check: async () => {
@@ -116,7 +109,27 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     ]
   });
 
-  await page.getByRole('link', { name: 'Dashboard' }).click();
+  await page.getByTestId('photo-card').first().click();
+  await page.getByTestId('toggle-exif').click();
+  await tester.step('image-exif-side-panel', {
+    description: 'The image view shows the original image and an EXIF side panel.',
+    verifications: [
+      { spec: 'Image view renders the photo', check: async () => await expect(page.getByTestId('object-image')).toBeVisible() },
+      { spec: 'Open original serves image/jpeg', check: async () => {
+        const originalHref = await page.getByTestId('open-original').getAttribute('href');
+        expect(originalHref).toBeTruthy();
+        const imageResponse = await page.request.get(originalHref!);
+        expect(imageResponse.ok()).toBe(true);
+        expect(imageResponse.headers()['content-type']).toContain('image/jpeg');
+      } },
+      { spec: 'EXIF panel is visible', check: async () => await expect(page.getByTestId('exif-panel')).toBeVisible() },
+      { spec: 'Camera make is visible', check: async () => await expect(page.getByTestId('exif-panel')).toContainText('Canon') },
+      { spec: 'Camera model is visible', check: async () => await expect(page.getByTestId('exif-panel')).toContainText('EOS 5D') },
+      { spec: 'Capture timestamp is visible', check: async () => await expect(page.getByTestId('exif-panel')).toContainText('2012:07:04 18:22:11') }
+    ]
+  });
+
+  await page.goto('/');
   await page.getByTestId('photos-by-date-link').click();
   await tester.step('photos-by-date-years', {
     description: 'The date browser lists years derived from raw EXIF metadata.',

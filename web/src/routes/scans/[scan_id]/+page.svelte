@@ -66,7 +66,7 @@
       {:else}
         <div class="photo-grid" data-testid="photo-grid">
           {#each files as file}
-            <a class="photo-card" data-testid="photo-card" href={file.view_url} target="_blank" rel="noreferrer">
+            <a class="photo-card" data-testid="photo-card" href={file.view_url}>
               <span class="thumb-wrap">
                 <img data-testid="thumbnail-image" src={file.thumbnail_url} alt={file.filename} loading="lazy">
               </span>
