@@ -35,7 +35,7 @@
     <div>
       <a href="/">Dashboard</a>
       <h1>Acquired files</h1>
-      <p><code data-screenshot-mask>{scanID}</code></p>
+      <p><code>{scanID}</code></p>
     </div>
     {#if report}
       <div class="count" data-testid="acquired-count">{files.length} files</div>

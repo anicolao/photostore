@@ -44,9 +44,7 @@ export class TestStepHelper {
 
     const paddedIndex = String(this.stepCount++).padStart(3, '0');
     const filename = `${paddedIndex}-${id.replace(/_/g, '-')}.png`;
-    await expect(this.page).toHaveScreenshot(filename.replace(/\.png$/, ''), {
-      mask: [this.page.locator('[data-screenshot-mask]')]
-    });
+    await expect(this.page).toHaveScreenshot(filename.replace(/\.png$/, ''));
 
     this.steps.push({
       title: options.description,

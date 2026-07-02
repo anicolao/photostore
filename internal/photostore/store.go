@@ -15,7 +15,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +25,8 @@ import (
 )
 
 const schemaVersion = 1
+
+var deterministicIDCounter atomic.Uint64
 
 type Store struct {
 	Root string
@@ -1052,10 +1056,19 @@ func progressf(progress ProgressFunc, format string, args ...any) {
 }
 
 func newID(prefix string) string {
+	if os.Getenv("PHOTOSTORE_DETERMINISTIC_IDS") == "1" {
+		n := deterministicIDCounter.Add(1)
+		return fmt.Sprintf("%s_%012d", prefix, n)
+	}
 	return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
 func nowMS() int64 {
+	if fixed := os.Getenv("PHOTOSTORE_FIXED_NOW_MS"); fixed != "" {
+		if parsed, err := strconv.ParseInt(fixed, 10, 64); err == nil {
+			return parsed
+		}
+	}
 	return time.Now().UnixMilli()
 }
 

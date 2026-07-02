@@ -1,12 +1,17 @@
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
-const store = join(process.cwd(), '.e2e-store');
+const store = '/tmp/photostore-e2e-store';
 rmSync(store, { recursive: true, force: true });
 mkdirSync(store, { recursive: true });
 const apiAddr = '127.0.0.1:18080';
-const env = { ...process.env, PHOTOSTORE_API_BASE: `http://${apiAddr}`, PHOTOSTORE_E2E_STORE: store };
+const env = {
+  ...process.env,
+  PHOTOSTORE_API_BASE: `http://${apiAddr}`,
+  PHOTOSTORE_E2E_STORE: store,
+  PHOTOSTORE_DETERMINISTIC_IDS: '1',
+  PHOTOSTORE_FIXED_NOW_MS: '1710504000000'
+};
 
 const children: ReturnType<typeof spawn>[] = [];
 
