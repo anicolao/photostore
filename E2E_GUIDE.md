@@ -306,5 +306,6 @@ nix develop --command sh -c 'cd web && bun run test:e2e'
 ```
 
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs these commands on
-macOS for pull requests. It runs `bun run test:e2e` without snapshot update mode,
-so committed screenshots must already match pixel for pixel.
+a pinned macOS runner for pull requests. It runs `bun run test:e2e` without
+snapshot update mode, so committed screenshots must already match pixel for
+pixel.
