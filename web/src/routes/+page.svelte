@@ -18,6 +18,7 @@
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let eventsSocket: WebSocket | undefined;
   let eventsClosed = false;
+  $: runningJobActive = jobs.some((job) => job.status === 'running') || activeJob?.status === 'running';
 
   async function refresh(showLoading = false) {
     if (showLoading) {
@@ -34,8 +35,8 @@
     sources = nextSources;
     scans = nextScans;
     inventories = nextInventories;
-    jobs = nextJobs;
-    applyJobs(nextJobs);
+    jobs = mergeJobs(jobs, nextJobs);
+    applyJobs(jobs);
     if (showLoading) {
       loading = false;
     }
@@ -117,8 +118,32 @@
   }
 
   function upsertJob(existing: Job[], next: Job) {
-    const withoutNext = existing.filter((job) => job.job_id !== next.job_id);
-    return latestJobs([next, ...withoutNext]);
+    return mergeJobs(existing, [next]);
+  }
+
+  function mergeJobs(existing: Job[], incoming: Job[]) {
+    const byID = new Map<string, Job>();
+    for (const job of existing) {
+      byID.set(job.job_id, job);
+    }
+    for (const job of incoming) {
+      const current = byID.get(job.job_id);
+      byID.set(job.job_id, preferNewerJob(current, job));
+    }
+    return latestJobs([...byID.values()]);
+  }
+
+  function preferNewerJob(current: Job | undefined, incoming: Job) {
+    if (!current) {
+      return incoming;
+    }
+    if (current.status !== 'running' && incoming.status === 'running') {
+      return current;
+    }
+    if (incoming.finished_at_ms !== null && (current.finished_at_ms === null || incoming.finished_at_ms >= current.finished_at_ms)) {
+      return incoming;
+    }
+    return incoming.started_at_ms >= current.started_at_ms ? incoming : current;
   }
 
   function latestJobs(nextJobs: Job[]) {
@@ -201,18 +226,14 @@
   }
 
   function canResume(scan: ScanProjection) {
-    return scan.status === 'started' && !hasRunningJob();
+    return scan.status === 'started' && !runningJobActive;
   }
 
   function scanStatus(scan: ScanProjection) {
     if (scan.status === 'started') {
-      return hasRunningJob() ? 'running' : 'incomplete';
+      return runningJobActive ? 'running' : 'incomplete';
     }
     return scan.status;
-  }
-
-  function hasRunningJob() {
-    return jobs.some((job) => job.status === 'running') || activeJob?.status === 'running';
   }
 
   function formatOptionalBytes(value: number | null | undefined) {
@@ -300,7 +321,7 @@
     <section aria-labelledby="sources-heading">
       <div class="section-heading">
         <h2 id="sources-heading">Source roots</h2>
-        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={hasRunningJob()}>
+        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={runningJobActive}>
           Scan
         </button>
       </div>
@@ -320,7 +341,7 @@
                 <code>{source.path}</code>
                 <span>Last scan: {formatScanTime(source.last_scan_completed_at_ms)}</span>
               </div>
-              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={hasRunningJob()}>
+              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={runningJobActive}>
                 Scan
               </button>
             </li>
