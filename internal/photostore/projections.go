@@ -107,6 +107,26 @@ type ObjectMetadataProjection struct {
 	Fields           map[string]map[string]string `json:"fields"`
 }
 
+type MetadataSummaryProjection struct {
+	ContentCount     int    `json:"content_count"`
+	ExtractedCount   int    `json:"extracted_count"`
+	FailedCount      int    `json:"failed_count"`
+	MissingCount     int    `json:"missing_count"`
+	ExtractorName    string `json:"extractor_name"`
+	ExtractorVersion int    `json:"extractor_version"`
+}
+
+type MetadataPhotoProjection struct {
+	StoredObjectID string `json:"stored_object_id"`
+	ContentRef     string `json:"content_ref"`
+	Filename       string `json:"filename"`
+	RelativePath   string `json:"relative_path"`
+	Status         string `json:"status"`
+	ErrorMessage   string `json:"error_message,omitempty"`
+	ViewURL        string `json:"view_url"`
+	ThumbnailURL   string `json:"thumbnail_url"`
+}
+
 type DatedPhotoResponse struct {
 	BucketKey string                 `json:"bucket_key"`
 	Photos    []DatedPhotoProjection `json:"photos"`
@@ -504,6 +524,136 @@ func (s *Store) ObjectMetadata(storedObjectID string) (ObjectMetadataProjection,
 		return ObjectMetadataProjection{}, err
 	}
 	return out, nil
+}
+
+func (s *Store) MetadataSummary() (MetadataSummaryProjection, error) {
+	summary := MetadataSummaryProjection{
+		ExtractorName:    metadataExtractorName,
+		ExtractorVersion: metadataExtractorVersion,
+	}
+	if err := s.DB.QueryRow(`
+		select count(distinct scl.content_ref)
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		where st.purpose = 'source_media'`).Scan(&summary.ContentCount); err != nil {
+		return summary, err
+	}
+	if err := s.DB.QueryRow(`select count(*) from content_metadata where extractor_name = ? and extractor_version = ?`, metadataExtractorName, metadataExtractorVersion).Scan(&summary.ExtractedCount); err != nil {
+		return summary, err
+	}
+	if err := s.DB.QueryRow(`select count(*) from content_metadata_failures where extractor_name = ? and extractor_version = ?`, metadataExtractorName, metadataExtractorVersion).Scan(&summary.FailedCount); err != nil {
+		return summary, err
+	}
+	if err := s.DB.QueryRow(`
+		select count(*)
+		from (
+			select distinct scl.content_ref
+			from source_content_links scl
+			join stored_objects st on st.stored_object_id = scl.stored_object_id
+			where st.purpose = 'source_media'
+				and not exists (
+					select 1 from content_metadata cm
+					where cm.content_ref = scl.content_ref
+						and cm.extractor_name = ?
+						and cm.extractor_version = ?
+				)
+				and not exists (
+					select 1 from content_metadata_failures cmf
+					where cmf.content_ref = scl.content_ref
+						and cmf.extractor_name = ?
+						and cmf.extractor_version = ?
+				)
+		)`, metadataExtractorName, metadataExtractorVersion, metadataExtractorName, metadataExtractorVersion).Scan(&summary.MissingCount); err != nil {
+		return summary, err
+	}
+	return summary, nil
+}
+
+func (s *Store) MetadataFailures() ([]MetadataPhotoProjection, error) {
+	rows, err := s.DB.Query(`
+		select cmf.stored_object_id,
+			cmf.content_ref,
+			coalesce(so.relative_path, ''),
+			coalesce(so.path, ''),
+			cmf.error_json
+		from content_metadata_failures cmf
+		left join source_occurrences so on so.source_occurrence_id = cmf.source_occurrence_id
+		where cmf.extractor_name = ? and cmf.extractor_version = ?
+		order by coalesce(so.relative_path, so.path), cmf.stored_object_id`, metadataExtractorName, metadataExtractorVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var photos []MetadataPhotoProjection
+	for rows.Next() {
+		var photo MetadataPhotoProjection
+		var path string
+		var errorJSON string
+		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.RelativePath, &path, &errorJSON); err != nil {
+			return nil, err
+		}
+		photo.Filename = filenameForProjection(photo.RelativePath, path)
+		photo.Status = "failed"
+		photo.ErrorMessage = errorMessageFromJSON(errorJSON)
+		photo.ViewURL = "/objects/" + photo.StoredObjectID
+		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
+		photos = append(photos, photo)
+	}
+	return photos, rows.Err()
+}
+
+func (s *Store) MetadataMissing() ([]MetadataPhotoProjection, error) {
+	rows, err := s.DB.Query(`
+		select scl.content_ref,
+			min(scl.stored_object_id),
+			min(coalesce(so.relative_path, '')),
+			min(coalesce(so.path, ''))
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		left join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+		where st.purpose = 'source_media'
+			and not exists (
+				select 1 from content_metadata cm
+				where cm.content_ref = scl.content_ref
+					and cm.extractor_name = ?
+					and cm.extractor_version = ?
+			)
+			and not exists (
+				select 1 from content_metadata_failures cmf
+				where cmf.content_ref = scl.content_ref
+					and cmf.extractor_name = ?
+					and cmf.extractor_version = ?
+			)
+		group by scl.content_ref
+		order by min(coalesce(so.relative_path, so.path))`, metadataExtractorName, metadataExtractorVersion, metadataExtractorName, metadataExtractorVersion)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var photos []MetadataPhotoProjection
+	for rows.Next() {
+		var photo MetadataPhotoProjection
+		var path string
+		if err := rows.Scan(&photo.ContentRef, &photo.StoredObjectID, &photo.RelativePath, &path); err != nil {
+			return nil, err
+		}
+		photo.Filename = filenameForProjection(photo.RelativePath, path)
+		photo.Status = "missing"
+		photo.ViewURL = "/objects/" + photo.StoredObjectID
+		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
+		photos = append(photos, photo)
+	}
+	return photos, rows.Err()
+}
+
+func errorMessageFromJSON(raw string) string {
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return raw
+	}
+	return payload.Message
 }
 
 type StoredObjectFile struct {

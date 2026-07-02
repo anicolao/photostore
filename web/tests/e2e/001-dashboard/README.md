@@ -141,9 +141,24 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ---
 
+## The metadata review page shows extraction results and photos where no metadata was found.
+
+![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/012-metadata-review.png)
+
+**Verifications:**
+- [x] Metadata heading is visible
+- [x] One unique content item has extracted metadata
+- [x] One photo has no metadata found
+- [x] No current extractor work remains unscanned
+- [x] Failed metadata list identifies bad.JPG
+- [x] Failed metadata list shows the extraction error
+- [x] Unscanned metadata empty state is visible
+
+---
+
 ## The dashboard can trigger a metadata refresh for photos without recorded metadata results.
 
-![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/012-metadata-refresh-triggered.png)
+![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/013-metadata-refresh-triggered.png)
 
 **Verifications:**
 - [x] Metadata refresh job completed

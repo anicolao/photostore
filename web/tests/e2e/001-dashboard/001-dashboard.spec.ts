@@ -32,6 +32,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   mkdirSync(source, { recursive: true });
   writeFileSync(`${source}/A.JPG`, fixtureJPEGWithEXIF);
   writeFileSync(`${source}/B.jpeg`, fixtureJPEGWithEXIF);
+  writeFileSync(`${source}/bad.JPG`, 'not really a jpeg');
   writeFileSync(`${source}/notes.txt`, 'not media');
 
   await page.getByTestId('source-path-input').fill(source);
@@ -167,6 +168,21 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Date photo grid lists the representative filename', check: async () => await expect(page.getByTestId('date-photo-grid')).toContainText('A.JPG') },
       { spec: 'Date photo grid does not show duplicate content twice', check: async () => await expect(page.getByTestId('date-photo-card')).toHaveCount(1) },
       { spec: 'Date thumbnail is visible', check: async () => await expect(page.getByTestId('date-thumbnail-image')).toBeVisible() }
+    ]
+  });
+
+  await page.goto('/');
+  await page.getByTestId('metadata-link').click();
+  await tester.step('metadata-review', {
+    description: 'The metadata review page shows extraction results and photos where no metadata was found.',
+    verifications: [
+      { spec: 'Metadata heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Metadata', exact: true })).toBeVisible() },
+      { spec: 'One unique content item has extracted metadata', check: async () => await expect(page.getByTestId('metadata-extracted-count')).toHaveText('1') },
+      { spec: 'One photo has no metadata found', check: async () => await expect(page.getByTestId('metadata-failed-count')).toHaveText('1') },
+      { spec: 'No current extractor work remains unscanned', check: async () => await expect(page.getByTestId('metadata-missing-count')).toHaveText('0') },
+      { spec: 'Failed metadata list identifies bad.JPG', check: async () => await expect(page.getByTestId('metadata-failures-list')).toContainText('bad.JPG') },
+      { spec: 'Failed metadata list shows the extraction error', check: async () => await expect(page.getByTestId('metadata-failures-list')).toContainText('not a JPEG file') },
+      { spec: 'Unscanned metadata empty state is visible', check: async () => await expect(page.getByTestId('metadata-missing-empty')).toBeVisible() }
     ]
   });
 
