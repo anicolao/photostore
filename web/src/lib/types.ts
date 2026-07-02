@@ -17,12 +17,12 @@ export type SourceRoot = {
 
 export type ScanReport = {
   scan_id: string;
-  candidate_files_seen: number;
-  source_files_acquired: number;
-  duplicate_acquisitions: number;
-  duplicate_garbage_bytes: number;
-  historical_jpeg_entries_loaded: number;
-  historical_entries_already_seen: number;
+  candidate_files_seen?: number | null;
+  source_files_acquired?: number | null;
+  duplicate_acquisitions?: number | null;
+  duplicate_garbage_bytes?: number | null;
+  historical_jpeg_entries_loaded?: number | null;
+  historical_entries_already_seen?: number | null;
 };
 
 export type ScanProjection = {

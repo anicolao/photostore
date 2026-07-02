@@ -27,7 +27,25 @@ type ScanProjection struct {
 	StartedAtMS   *int64          `json:"started_at_ms"`
 	CompletedAtMS *int64          `json:"completed_at_ms"`
 	Stats         json.RawMessage `json:"stats"`
-	Report        *ScanReport     `json:"report,omitempty"`
+	Report        *ScanReportView `json:"report,omitempty"`
+}
+
+type ScanReportView struct {
+	ScanID                       string `json:"scan_id"`
+	SourceRootsScanned           *int   `json:"source_roots_scanned"`
+	DirectoriesSeen              *int   `json:"directories_seen"`
+	RegularFilesSeen             *int   `json:"regular_files_seen"`
+	CandidateFilesSeen           *int   `json:"candidate_files_seen"`
+	SourceFilesAcquired          *int   `json:"source_files_acquired"`
+	SourceFileAcquireFailures    *int   `json:"source_file_acquire_failures"`
+	ContentAddressesMaterialized *int   `json:"content_addresses_materialized"`
+	DuplicateAcquisitions        *int   `json:"duplicate_acquisitions"`
+	DuplicateGarbageBytes        *int64 `json:"duplicate_garbage_bytes"`
+	NonCandidateFilesSkipped     *int   `json:"non_candidate_files_skipped"`
+	HistoricalJPEGEntriesLoaded  *int   `json:"historical_jpeg_entries_loaded"`
+	HistoricalEntriesAlreadySeen *int   `json:"historical_entries_already_seen"`
+	HistoricalEntriesResolved    *int   `json:"historical_entries_resolved"`
+	HistoricalEntriesUnresolved  *int   `json:"historical_entries_unresolved"`
 }
 
 type HistoricalInventoryProjection struct {
@@ -128,12 +146,72 @@ func (s *Store) Scans(limit int) ([]ScanProjection, error) {
 		if completed.Valid {
 			scan.CompletedAtMS = &completed.Int64
 		}
-		if report, err := s.Report(scan.ScanID); err == nil {
+		if report, err := s.scanReportView(scan.ScanID); err == nil {
 			scan.Report = report
 		}
 		out = append(out, scan)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) scanReportView(scanID string) (*ScanReportView, error) {
+	b, err := os.ReadFile(filepath.Join(s.Root, "reports", "scan-"+scanID+".json"))
+	if err != nil {
+		return nil, err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, err
+	}
+	view := &ScanReportView{ScanID: scanID}
+	setString(raw, "scan_id", &view.ScanID)
+	view.SourceRootsScanned = intPtr(raw, "source_roots_scanned")
+	view.DirectoriesSeen = intPtr(raw, "directories_seen")
+	view.RegularFilesSeen = intPtr(raw, "regular_files_seen")
+	view.CandidateFilesSeen = intPtr(raw, "candidate_files_seen")
+	view.SourceFilesAcquired = intPtr(raw, "source_files_acquired")
+	view.SourceFileAcquireFailures = intPtr(raw, "source_file_acquire_failures")
+	view.ContentAddressesMaterialized = intPtr(raw, "content_addresses_materialized")
+	view.DuplicateAcquisitions = intPtr(raw, "duplicate_acquisitions")
+	view.DuplicateGarbageBytes = int64Ptr(raw, "duplicate_garbage_bytes")
+	view.NonCandidateFilesSkipped = intPtr(raw, "non_candidate_files_skipped")
+	view.HistoricalJPEGEntriesLoaded = intPtr(raw, "historical_jpeg_entries_loaded")
+	view.HistoricalEntriesAlreadySeen = intPtr(raw, "historical_entries_already_seen")
+	view.HistoricalEntriesResolved = intPtr(raw, "historical_entries_resolved")
+	view.HistoricalEntriesUnresolved = intPtr(raw, "historical_entries_unresolved")
+	return view, nil
+}
+
+func setString(raw map[string]json.RawMessage, key string, dst *string) {
+	v, ok := raw[key]
+	if !ok {
+		return
+	}
+	_ = json.Unmarshal(v, dst)
+}
+
+func intPtr(raw map[string]json.RawMessage, key string) *int {
+	v, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	var out int
+	if err := json.Unmarshal(v, &out); err != nil {
+		return nil
+	}
+	return &out
+}
+
+func int64Ptr(raw map[string]json.RawMessage, key string) *int64 {
+	v, ok := raw[key]
+	if !ok {
+		return nil
+	}
+	var out int64
+	if err := json.Unmarshal(v, &out); err != nil {
+		return nil
+	}
+	return &out
 }
 
 func (s *Store) RecentEvents(limit int) ([]Event, error) {
