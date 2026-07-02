@@ -13,7 +13,15 @@
   onMount(async () => {
     scanID = $page.params.scan_id ?? '';
     try {
-      [report, files] = await Promise.all([getReport(scanID), getAcquiredFiles(scanID)]);
+      const [reportResult, filesResult] = await Promise.allSettled([getReport(scanID), getAcquiredFiles(scanID)]);
+      if (reportResult.status === 'fulfilled') {
+        report = reportResult.value;
+      }
+      if (filesResult.status === 'fulfilled') {
+        files = filesResult.value;
+      } else {
+        throw filesResult.reason;
+      }
     } catch (err) {
       error = String(err);
     } finally {
@@ -44,9 +52,7 @@
       <h1>Photos</h1>
       <p><code>{scanID}</code></p>
     </div>
-    {#if report}
-      <div class="count" data-testid="acquired-count">{files.length} files</div>
-    {/if}
+    <div class="count" data-testid="acquired-count">{files.length} files</div>
   </header>
 
   {#if loading}
