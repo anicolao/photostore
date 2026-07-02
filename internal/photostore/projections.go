@@ -63,9 +63,11 @@ type AcquiredFileProjection struct {
 	SourceRootID       string `json:"source_root_id,omitempty"`
 	Path               string `json:"path"`
 	RelativePath       string `json:"relative_path"`
+	Filename           string `json:"filename"`
 	ScanID             string `json:"scan_id"`
 	ContentRef         string `json:"content_ref"`
 	ViewURL            string `json:"view_url"`
+	ThumbnailURL       string `json:"thumbnail_url"`
 }
 
 func (s *Store) Summary() (StoreSummary, error) {
@@ -290,7 +292,12 @@ func (s *Store) AcquiredFiles(scanID string) ([]AcquiredFileProjection, error) {
 		if err := rows.Scan(&file.SourceOccurrenceID, &file.StoredObjectID, &file.SourceKind, &file.SourceRootID, &file.Path, &file.RelativePath, &file.ScanID, &file.ContentRef); err != nil {
 			return nil, err
 		}
+		file.Filename = filepath.Base(file.RelativePath)
+		if file.Filename == "." || file.Filename == string(filepath.Separator) || file.Filename == "" {
+			file.Filename = filepath.Base(file.Path)
+		}
 		file.ViewURL = "/api/objects/" + file.StoredObjectID + "/bytes"
+		file.ThumbnailURL = "/api/objects/" + file.StoredObjectID + "/thumbnail"
 		out = append(out, file)
 	}
 	return out, rows.Err()

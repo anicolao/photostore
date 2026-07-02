@@ -2,9 +2,14 @@ import { expect, test } from '@playwright/test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { TestStepHelper } from '../helpers/test-step-helper';
 
+const fixtureJPEG = Buffer.from(
+  '/9j/2wCEAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx4BBQUFBwYHDggIDh4UERQeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHv/AABEIABIAGAMBIgACEQEDEQH/xAGiAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgsQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+gEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoLEQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVictEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AM+20/p8taltp/T5a2rbT+ny1p22n9Plr1K2P8zx8tzLbUxbbT+ny1Y/s/8A2a6W20/p8tWP7P8A9mvMnj9dz7fDZl7m5n2wHHArTtgOOBWbbdq07btXJWPyPLehp2wHHAqxgegqvbdqsV5k9z7bD/Af/9k=',
+  'base64'
+);
+
 test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   const tester = new TestStepHelper(page, testInfo);
-  tester.setMetadata('Dashboard Source Scan', 'Register a source root, scan it, inspect the compact progress log, and drill into acquired files.');
+  tester.setMetadata('Dashboard Source Scan', 'Register a source root, scan it, inspect the compact progress log, and drill into acquired photo thumbnails.');
 
   await page.goto('/');
   await tester.step('empty-dashboard', {
@@ -19,8 +24,8 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   const source = '/tmp/photostore-e2e-source';
   rmSync(source, { recursive: true, force: true });
   mkdirSync(source, { recursive: true });
-  writeFileSync(`${source}/A.JPG`, 'same');
-  writeFileSync(`${source}/B.jpeg`, 'same');
+  writeFileSync(`${source}/A.JPG`, fixtureJPEG);
+  writeFileSync(`${source}/B.jpeg`, fixtureJPEG);
   writeFileSync(`${source}/notes.txt`, 'not media');
 
   await page.getByTestId('source-path-input').fill(source);
@@ -44,7 +49,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Full job log is hidden by default', check: async () => await expect(page.getByTestId('job-log')).toHaveCount(0) },
       { spec: 'Source last scan is no longer Never', check: async () => await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never') },
       { spec: 'Scan table shows completed scan', check: async () => await expect(page.getByTestId('scan-table')).toContainText('completed') },
-      { spec: 'Duplicate bytes summary is updated', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('4') }
+      { spec: 'Duplicate bytes summary is updated', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText(String(fixtureJPEG.length)) }
     ]
   });
 
@@ -59,18 +64,30 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
 
   await page.getByTestId('scan-acquired-link').click();
   await tester.step('acquired-files-drilldown', {
-    description: 'The acquired count opens a file list with image links.',
+    description: 'The acquired count opens a thumbnail grid with image links.',
     verifications: [
-      { spec: 'Acquired files heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Acquired files' })).toBeVisible() },
-      { spec: 'Acquired table lists A.JPG', check: async () => await expect(page.getByTestId('acquired-table')).toContainText('A.JPG') },
+      { spec: 'Photos heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Photos' })).toBeVisible() },
+      { spec: 'Photo grid lists A.JPG by filename', check: async () => await expect(page.getByTestId('photo-grid')).toContainText('A.JPG') },
+      { spec: 'Photo grid does not show the absolute source path', check: async () => await expect(page.getByTestId('photo-grid')).not.toContainText('/tmp/photostore-e2e-source') },
+      { spec: 'Generated thumbnails are visible', check: async () => await expect(page.getByTestId('thumbnail-image').first()).toBeVisible() },
       {
         spec: 'First acquired file link serves image/jpeg',
         check: async () => {
-          const imageHref = await page.getByTestId('acquired-image-link').first().getAttribute('href');
+          const imageHref = await page.getByTestId('photo-card').first().getAttribute('href');
           expect(imageHref).toBeTruthy();
           const imageResponse = await page.request.get(imageHref!);
           expect(imageResponse.ok()).toBe(true);
           expect(imageResponse.headers()['content-type']).toContain('image/jpeg');
+        }
+      },
+      {
+        spec: 'First thumbnail serves image/jpeg',
+        check: async () => {
+          const thumbnailSrc = await page.getByTestId('thumbnail-image').first().getAttribute('src');
+          expect(thumbnailSrc).toBeTruthy();
+          const thumbnailResponse = await page.request.get(thumbnailSrc!);
+          expect(thumbnailResponse.ok()).toBe(true);
+          expect(thumbnailResponse.headers()['content-type']).toContain('image/jpeg');
         }
       }
     ]

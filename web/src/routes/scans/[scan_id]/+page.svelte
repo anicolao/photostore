@@ -24,6 +24,13 @@
   function displayPath(file: AcquiredFile) {
     return file.relative_path || file.path;
   }
+
+  function directoryName(file: AcquiredFile) {
+    const display = displayPath(file);
+    const filename = file.filename || display.split(/[\\/]/).pop() || display;
+    if (display === filename) return '';
+    return display.slice(0, Math.max(0, display.length - filename.length)).replace(/[\\/]$/, '');
+  }
 </script>
 
 <svelte:head>
@@ -34,7 +41,7 @@
   <header>
     <div>
       <a href="/">Dashboard</a>
-      <h1>Acquired files</h1>
+      <h1>Photos</h1>
       <p><code>{scanID}</code></p>
     </div>
     {#if report}
@@ -51,28 +58,19 @@
       {#if files.length === 0}
         <p data-testid="acquired-empty">No acquired files for this scan.</p>
       {:else}
-        <table data-testid="acquired-table">
-          <thead>
-            <tr>
-              <th>File</th>
-              <th>Source</th>
-              <th>Content</th>
-            </tr>
-          </thead>
-          <tbody>
-            {#each files as file}
-              <tr>
-                <td>
-                  <a data-testid="acquired-image-link" href={file.view_url} target="_blank" rel="noreferrer">
-                    {displayPath(file)}
-                  </a>
-                </td>
-                <td>{file.source_kind}</td>
-                <td><code>{file.content_ref}</code></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
+        <div class="photo-grid" data-testid="photo-grid">
+          {#each files as file}
+            <a class="photo-card" data-testid="photo-card" href={file.view_url} target="_blank" rel="noreferrer">
+              <span class="thumb-wrap">
+                <img data-testid="thumbnail-image" src={file.thumbnail_url} alt={file.filename} loading="lazy">
+              </span>
+              <span class="filename" data-testid="photo-filename">{file.filename}</span>
+              {#if directoryName(file)}
+                <span class="directory">{directoryName(file)}</span>
+              {/if}
+            </a>
+          {/each}
+        </div>
       {/if}
     </section>
   {/if}
@@ -119,20 +117,53 @@
     color: #a50e0e;
   }
 
-  table {
+  .photo-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 14px;
+  }
+
+  .photo-card {
+    display: grid;
+    grid-template-rows: 132px auto auto;
+    gap: 7px;
+    color: inherit;
+    text-decoration: none;
+    min-width: 0;
+  }
+
+  .photo-card:hover .filename {
+    text-decoration: underline;
+  }
+
+  .thumb-wrap {
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    background: #eef1f5;
+  }
+
+  img {
     width: 100%;
-    border-collapse: collapse;
+    height: 100%;
+    object-fit: cover;
+    display: block;
   }
 
-  th,
-  td {
-    border-top: 1px solid #eef1f5;
-    padding: 8px;
-    text-align: left;
-    vertical-align: top;
+  .filename {
+    font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  code {
-    word-break: break-all;
+  .directory {
+    color: #5f6368;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
