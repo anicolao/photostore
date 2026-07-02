@@ -32,4 +32,13 @@ test('dashboard loads and scans a source root', async ({ page }) => {
   await expect(page.getByTestId('scan-table')).toContainText('completed');
   await expect(page.getByTestId('scan-table')).toContainText('2');
   await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('4');
+
+  await page.getByTestId('scan-acquired-link').click();
+  await expect(page.getByRole('heading', { name: 'Acquired files' })).toBeVisible();
+  await expect(page.getByTestId('acquired-table')).toContainText('A.JPG');
+  const imageHref = await page.getByTestId('acquired-image-link').first().getAttribute('href');
+  expect(imageHref).toBeTruthy();
+  const imageResponse = await page.request.get(imageHref!);
+  expect(imageResponse.ok()).toBe(true);
+  expect(imageResponse.headers()['content-type']).toContain('image/jpeg');
 });

@@ -121,6 +121,8 @@ GET  /api/scans
 POST /api/scans
 GET  /api/scans/{scan_id}
 GET  /api/scans/{scan_id}/report
+GET  /api/scans/{scan_id}/acquired
+GET  /api/objects/{stored_object_id}/bytes
 
 GET  /api/inventories
 POST /api/inventories/acquire
@@ -167,6 +169,8 @@ Primary regions:
   actions with resolver roots and extension filters.
 - Recent scan reports: discovered candidates, acquired objects, skipped trusted
   duplicates, duplicate acquisitions, duplicate garbage bytes, and errors.
+- Acquired-file drill-down: clicking a scan's acquired count opens a route that
+  lists acquired files and links each file to its stored JPEG bytes.
 - Recent events: compact event tail for debugging and confidence.
 
 Use stable `data-testid` attributes for all controls and status values covered
@@ -231,5 +235,7 @@ The UI MVP is complete when:
 - A user can add a source root and run a JPEG scan from the browser.
 - A user can acquire and scan a historical `.toc` inventory from the browser.
 - Scan reports include duplicate acquisition and duplicate garbage counts.
+- A user can click a scan's acquired count, inspect acquired file paths, and open
+  the underlying JPEG bytes in the browser.
 - `go test ./...`, `cd web && bun run check`, frontend build, and Playwright
   E2E tests pass in the Nix development shell.

@@ -248,7 +248,11 @@
             <tr>
               <td><code>{scan.scan_id}</code></td>
               <td>{scan.status}</td>
-              <td>{formatOptionalNumber(scan.report?.source_files_acquired)}</td>
+              <td>
+                <a data-testid="scan-acquired-link" href={`/scans/${scan.scan_id}`}>
+                  {formatOptionalNumber(scan.report?.source_files_acquired)}
+                </a>
+              </td>
               <td>{formatOptionalNumber(scan.report?.duplicate_acquisitions)}</td>
               <td>{formatOptionalBytes(scan.report?.duplicate_garbage_bytes)}</td>
             </tr>

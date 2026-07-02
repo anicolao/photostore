@@ -35,6 +35,18 @@ export type ScanProjection = {
   report?: ScanReport;
 };
 
+export type AcquiredFile = {
+  source_occurrence_id: string;
+  stored_object_id: string;
+  source_kind: string;
+  source_root_id?: string;
+  path: string;
+  relative_path: string;
+  scan_id: string;
+  content_ref: string;
+  view_url: string;
+};
+
 export type HistoricalInventory = {
   historical_inventory_id: string;
   original_path: string;

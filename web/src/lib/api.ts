@@ -1,4 +1,4 @@
-import type { HistoricalInventory, Job, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
+import type { AcquiredFile, HistoricalInventory, Job, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -54,6 +54,10 @@ export function getJob(jobID: string): Promise<Job> {
 
 export function getReport(scanID: string): Promise<ScanReport> {
   return request(`/api/scans/${scanID}/report`);
+}
+
+export function getAcquiredFiles(scanID: string): Promise<AcquiredFile[]> {
+  return request(`/api/scans/${scanID}/acquired`);
 }
 
 export function getInventories(): Promise<HistoricalInventory[]> {
