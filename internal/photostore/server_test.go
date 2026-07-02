@@ -306,6 +306,84 @@ func TestServerCanScanSingleSourceRoot(t *testing.T) {
 	}
 }
 
+func TestServerCanResumeStartedSourceScan(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), testJPEG(t))
+	mustWrite(t, filepath.Join(sourcePath, "B.JPG"), testJPEG(t))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sourceID, err := st.AddSourceRoot(sourcePath, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanID := "scan_interrupted"
+	if err := st.appendEvent("SourceRootScanRequested", nil, &scanID, map[string]any{
+		"scan_id":              scanID,
+		"source_root_ids":      []string{sourceID},
+		"candidate_extensions": []string{".jpg", ".jpeg"},
+		"requested_by":         "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.appendEvent("IngestionScanStarted", nil, &scanID, map[string]any{
+		"scan_id":       scanID,
+		"started_at_ms": int64(123),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	entryID, err := st.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
+		"scan_id":                 scanID,
+		"source_root_id":          sourceID,
+		"source_kind":             "source_root",
+		"path":                    filepath.Join(sourcePath, "A.JPG"),
+		"relative_path":           "A.JPG",
+		"historical_inventory_id": nil,
+		"inventory_entry_id":      nil,
+		"entry_type":              "regular_file",
+		"filesystem":              statPayload(filepath.Join(sourcePath, "A.JPG")),
+		"candidate_reason": map[string]any{
+			"method":    "extension",
+			"extension": ".jpg",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialReport := &ScanReport{ScanID: scanID}
+	if err := st.acquireSourceFile(scanID, &entryID, sourceID, "source_root", filepath.Join(sourcePath, "A.JPG"), "A.JPG", "", "", partialReport); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+	var started Job
+	postJSONInto(t, ts.URL+"/api/scans/"+scanID+"/resume", map[string]string{}, http.StatusAccepted, &started)
+	done := waitJob(t, ts.URL, started.JobID)
+	if done.Status != "completed" {
+		t.Fatalf("resume job status = %s, error = %v", done.Status, done.Error)
+	}
+	if done.ResultRef == nil || *done.ResultRef != scanID {
+		t.Fatalf("resume result ref = %#v, want %s", done.ResultRef, scanID)
+	}
+	var report ScanReport
+	getJSON(t, ts.URL+"/api/scans/"+scanID+"/report", &report)
+	if report.SourceFilesAcquired != 2 {
+		t.Fatalf("source files acquired = %d, want 2", report.SourceFilesAcquired)
+	}
+	var acquired []AcquiredFileProjection
+	getJSON(t, ts.URL+"/api/scans/"+scanID+"/acquired", &acquired)
+	if len(acquired) != 2 {
+		t.Fatalf("acquired files = %d, want 2", len(acquired))
+	}
+}
+
 func TestScansPreserveUnknownDuplicateStats(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {
