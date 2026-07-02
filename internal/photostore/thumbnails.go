@@ -1,15 +1,18 @@
 package photostore
 
 import (
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
 const thumbnailMaxDimension = 240
+const thumbnailRendererVersion = "orient-v2"
 
 const thumbnailPlaceholderSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180" role="img" aria-label="Thumbnail pending"><rect width="240" height="180" fill="#eef1f5"/><path d="M58 124l34-38 28 29 18-20 44 49H58z" fill="#c7d0db"/><circle cx="164" cy="58" r="18" fill="#d7dee7"/><text x="120" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#667085">thumbnail pending</text></svg>`
 
@@ -37,13 +40,7 @@ func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) Th
 			summary.Skipped++
 			continue
 		}
-		src, err := s.StoredObjectFile(file.StoredObjectID)
-		if err != nil {
-			summary.Failed++
-			progressf(progress, "thumbnail source lookup failed for %s: %v", file.Filename, err)
-			continue
-		}
-		if err := writeJPEGThumbnail(src.Path, thumb); err != nil {
+		if err := s.writeThumbnailForObject(file.StoredObjectID, thumb); err != nil {
 			summary.Failed++
 			progressf(progress, "thumbnail unavailable for %s: %v", file.Filename, err)
 			continue
@@ -53,6 +50,25 @@ func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) Th
 	}
 	progressf(progress, "thumbnails generated: %d, skipped: %d, unavailable: %d", summary.Generated, summary.Skipped, summary.Failed)
 	return summary
+}
+
+func (s *Store) EnsureThumbnailForObject(storedObjectID string) error {
+	path, ok, err := s.ThumbnailFile(storedObjectID)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	return s.writeThumbnailForObject(storedObjectID, path)
+}
+
+func (s *Store) writeThumbnailForObject(storedObjectID, dstPath string) error {
+	src, err := s.StoredObjectFile(storedObjectID)
+	if err != nil {
+		return err
+	}
+	return writeJPEGThumbnail(src.Path, dstPath)
 }
 
 func (s *Store) ThumbnailFile(storedObjectID string) (string, bool, error) {
@@ -74,7 +90,7 @@ func (s *Store) thumbnailPath(storedObjectID string) (string, error) {
 	if storedObjectID == "" || strings.ContainsAny(storedObjectID, `/\`) || storedObjectID == "." || storedObjectID == ".." {
 		return "", fmt.Errorf("invalid stored object id %q", storedObjectID)
 	}
-	return filepath.Join(s.Root, "thumbnails", "jpeg", fmt.Sprint(thumbnailMaxDimension), storedObjectID+".jpg"), nil
+	return filepath.Join(s.Root, "thumbnails", "jpeg", fmt.Sprint(thumbnailMaxDimension), thumbnailRendererVersion, storedObjectID+".jpg"), nil
 }
 
 func writeJPEGThumbnail(srcPath, dstPath string) error {
@@ -87,18 +103,23 @@ func writeJPEGThumbnail(srcPath, dstPath string) error {
 	if err != nil {
 		return err
 	}
+	orientation := jpegOrientation(srcPath)
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
 	if width <= 0 || height <= 0 {
 		return fmt.Errorf("invalid image dimensions %dx%d", width, height)
 	}
-	dstWidth, dstHeight := thumbnailSize(width, height)
+	orientedWidth, orientedHeight := orientedDimensions(width, height, orientation)
+	dstWidth, dstHeight := thumbnailSize(orientedWidth, orientedHeight)
 	thumb := image.NewRGBA(image.Rect(0, 0, dstWidth, dstHeight))
 	for y := 0; y < dstHeight; y++ {
-		sy := bounds.Min.Y + y*height/dstHeight
+		oy := y * orientedHeight / dstHeight
 		for x := 0; x < dstWidth; x++ {
-			sx := bounds.Min.X + x*width/dstWidth
+			ox := x * orientedWidth / dstWidth
+			sx, sy := orientedToSource(ox, oy, width, height, orientation)
+			sx += bounds.Min.X
+			sy += bounds.Min.Y
 			thumb.Set(x, y, img.At(sx, sy))
 		}
 	}
@@ -139,4 +160,148 @@ func thumbnailSize(width, height int) (int, int) {
 		dstWidth = 1
 	}
 	return dstWidth, dstHeight
+}
+
+func orientedDimensions(width, height, orientation int) (int, int) {
+	switch orientation {
+	case 5, 6, 7, 8:
+		return height, width
+	default:
+		return width, height
+	}
+}
+
+func orientedToSource(x, y, width, height, orientation int) (int, int) {
+	switch orientation {
+	case 2:
+		return width - 1 - x, y
+	case 3:
+		return width - 1 - x, height - 1 - y
+	case 4:
+		return x, height - 1 - y
+	case 5:
+		return y, x
+	case 6:
+		return y, height - 1 - x
+	case 7:
+		return width - 1 - y, height - 1 - x
+	case 8:
+		return width - 1 - y, x
+	default:
+		return x, y
+	}
+}
+
+func jpegOrientation(path string) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 1
+	}
+	defer f.Close()
+	orientation, err := readJPEGOrientation(f)
+	if err != nil || orientation < 1 || orientation > 8 {
+		return 1
+	}
+	return orientation
+}
+
+func readJPEGOrientation(r io.Reader) (int, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return 1, err
+	}
+	if header != [2]byte{0xff, 0xd8} {
+		return 1, nil
+	}
+	for {
+		marker, err := nextJPEGMarker(r)
+		if err != nil {
+			return 1, err
+		}
+		if marker == 0xda || marker == 0xd9 {
+			return 1, nil
+		}
+		var lenBuf [2]byte
+		if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
+			return 1, err
+		}
+		segmentLen := int(binary.BigEndian.Uint16(lenBuf[:]))
+		if segmentLen < 2 {
+			return 1, fmt.Errorf("invalid jpeg segment length %d", segmentLen)
+		}
+		payloadLen := segmentLen - 2
+		if marker != 0xe1 {
+			if _, err := io.CopyN(io.Discard, r, int64(payloadLen)); err != nil {
+				return 1, err
+			}
+			continue
+		}
+		payload := make([]byte, payloadLen)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return 1, err
+		}
+		if orientation, ok := exifOrientation(payload); ok {
+			return orientation, nil
+		}
+	}
+}
+
+func nextJPEGMarker(r io.Reader) (byte, error) {
+	var b [1]byte
+	for {
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, err
+		}
+		if b[0] == 0xff {
+			break
+		}
+	}
+	for {
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, err
+		}
+		if b[0] != 0xff {
+			return b[0], nil
+		}
+	}
+}
+
+func exifOrientation(payload []byte) (int, bool) {
+	const exifHeader = "Exif\x00\x00"
+	if len(payload) < len(exifHeader)+8 || string(payload[:len(exifHeader)]) != exifHeader {
+		return 1, false
+	}
+	tiff := payload[len(exifHeader):]
+	var order binary.ByteOrder
+	switch string(tiff[:2]) {
+	case "II":
+		order = binary.LittleEndian
+	case "MM":
+		order = binary.BigEndian
+	default:
+		return 1, false
+	}
+	if order.Uint16(tiff[2:4]) != 42 {
+		return 1, false
+	}
+	ifdOffset := int(order.Uint32(tiff[4:8]))
+	if ifdOffset < 8 || ifdOffset+2 > len(tiff) {
+		return 1, false
+	}
+	entries := int(order.Uint16(tiff[ifdOffset : ifdOffset+2]))
+	pos := ifdOffset + 2
+	for i := 0; i < entries; i++ {
+		if pos+12 > len(tiff) {
+			return 1, false
+		}
+		entry := tiff[pos : pos+12]
+		tag := order.Uint16(entry[0:2])
+		typ := order.Uint16(entry[2:4])
+		count := order.Uint32(entry[4:8])
+		if tag == 0x0112 && typ == 3 && count == 1 {
+			return int(order.Uint16(entry[8:10])), true
+		}
+		pos += 12
+	}
+	return 1, false
 }

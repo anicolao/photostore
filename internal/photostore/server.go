@@ -201,10 +201,12 @@ func (s *Server) handleStoredObjectThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !ok {
-		w.Header().Set("Content-Type", "image/svg+xml")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(thumbnailPlaceholderSVG))
-		return
+		if err := s.store.EnsureThumbnailForObject(storedObjectID); err != nil {
+			w.Header().Set("Content-Type", "image/svg+xml")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write([]byte(thumbnailPlaceholderSVG))
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Content-Disposition", "inline")

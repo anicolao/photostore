@@ -98,13 +98,13 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if err := os.Remove(thumbPath); err != nil {
 		t.Fatal(err)
 	}
-	placeholder, err := http.Get(ts.URL + acquired[0].ThumbnailURL)
+	regenerated, err := http.Get(ts.URL + acquired[0].ThumbnailURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer placeholder.Body.Close()
-	if got := placeholder.Header.Get("Content-Type"); got != "image/svg+xml" {
-		t.Fatalf("placeholder content type = %q, want image/svg+xml", got)
+	defer regenerated.Body.Close()
+	if got := regenerated.Header.Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("regenerated thumbnail content type = %q, want image/jpeg", got)
 	}
 	var scans []ScanProjection
 	getJSON(t, ts.URL+"/api/scans", &scans)
@@ -125,6 +125,43 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	}
 	if sources[0].LastScanCompletedAtMS == nil {
 		t.Fatal("missing last scan completed timestamp")
+	}
+}
+
+func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "bad.JPG"), []byte("not a jpeg"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	postJSON(t, ts.URL+"/api/sources", map[string]string{"path": sourcePath, "label": "fixture"}, http.StatusCreated)
+	var started Job
+	postJSONInto(t, ts.URL+"/api/scans", map[string]string{}, http.StatusAccepted, &started)
+	done := waitJob(t, ts.URL, started.JobID)
+	if done.Status != "completed" {
+		t.Fatalf("job status = %s, error = %v", done.Status, done.Error)
+	}
+	var acquired []AcquiredFileProjection
+	getJSON(t, ts.URL+"/api/scans/"+*done.ResultRef+"/acquired", &acquired)
+	if len(acquired) != 1 {
+		t.Fatalf("acquired files = %d, want 1", len(acquired))
+	}
+	placeholder, err := http.Get(ts.URL + acquired[0].ThumbnailURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer placeholder.Body.Close()
+	if got := placeholder.Header.Get("Content-Type"); got != "image/svg+xml" {
+		t.Fatalf("placeholder content type = %q, want image/svg+xml", got)
 	}
 }
 
