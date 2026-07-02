@@ -649,6 +649,9 @@ func (s *Store) initSchema() error {
 		`create table if not exists historical_seen_links(source_occurrence_id text primary key, historical_inventory_id text, inventory_entry_id text, content_ref text, link_event_id text)`,
 		`create table if not exists asset_projection(asset_projection_id text primary key, content_ref text unique, representative_stored_object_id text, asset_kind text)`,
 		`create table if not exists scans(scan_id text primary key, status text, started_at_ms integer, completed_at_ms integer, stats_json text)`,
+		`create table if not exists content_metadata(content_ref text, extractor_name text, extractor_version integer, metadata_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, extracted_at_ms integer, fields_json text, warnings_json text, primary key(content_ref, extractor_name, extractor_version))`,
+		`create table if not exists content_metadata_failures(content_ref text, extractor_name text, extractor_version integer, failure_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, failed_at_ms integer, error_json text, primary key(content_ref, extractor_name, extractor_version))`,
+		`create table if not exists metadata_issues(issue_event_id text primary key, content_ref text, stored_object_id text, source_occurrence_id text, scan_id text, extractor_name text, extractor_version integer, detected_at_ms integer, issue_type text, severity text, details_json text)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.DB.Exec(stmt); err != nil {
@@ -751,6 +754,16 @@ func (s *Store) applyEvent(ev Event) error {
 		_, err = tx.Exec(`insert or replace into scans(scan_id,status,started_at_ms,stats_json) values(?,?,?,coalesce((select stats_json from scans where scan_id=?),'{}'))`, str(ev.Payload["scan_id"]), "started", int64Value(ev.Payload["started_at_ms"]), str(ev.Payload["scan_id"]))
 	case "IngestionScanCompleted":
 		_, err = tx.Exec(`insert or replace into scans(scan_id,status,completed_at_ms,stats_json) values(?,?,?,?)`, str(ev.Payload["scan_id"]), "completed", int64Value(ev.Payload["completed_at_ms"]), mustJSON(ev.Payload["stats"]))
+	case "PhotoMetadataExtracted":
+		extractor := mapValue(ev.Payload["extractor"])
+		_, err = tx.Exec(`insert or ignore into content_metadata values(?,?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["extracted_at_ms"]), pj("fields"), pj("warnings"))
+	case "PhotoMetadataExtractionFailed":
+		extractor := mapValue(ev.Payload["extractor"])
+		_, err = tx.Exec(`insert or ignore into content_metadata_failures values(?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["failed_at_ms"]), pj("error"))
+	case "PhotoMetadataObservationMismatchDetected":
+		extractor := mapValue(ev.Payload["extractor"])
+		issue := mapValue(ev.Payload["issue"])
+		_, err = tx.Exec(`insert or ignore into metadata_issues values(?,?,?,?,?,?,?,?,?,?,?)`, ev.EventID, str(ev.Payload["content_ref"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), str(extractor["name"]), int64Value(extractor["version"]), int64Value(ev.Payload["detected_at_ms"]), str(issue["type"]), str(issue["severity"]), mustJSON(ev.Payload))
 	}
 	if err != nil {
 		return err
@@ -802,6 +815,9 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 		},
 	}
 	if err := s.appendEvent("SourceFileAcquired", causationID, &scanID, payload); err != nil {
+		return err
+	}
+	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key)); err != nil {
 		return err
 	}
 	report.SourceFilesAcquired++

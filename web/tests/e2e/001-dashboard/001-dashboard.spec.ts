@@ -48,6 +48,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Latest progress message is visible', check: async () => await expect(page.getByTestId('job-latest-progress')).toBeVisible() },
       { spec: 'Full job log is hidden by default', check: async () => await expect(page.getByTestId('job-log')).toHaveCount(0) },
       { spec: 'Source last scan is no longer Never', check: async () => await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never') },
+      { spec: 'Source scan button is re-enabled', check: async () => await expect(page.getByTestId('source-list').getByRole('button', { name: 'Scan' })).toBeEnabled() },
       { spec: 'Scan table shows completed scan', check: async () => await expect(page.getByTestId('scan-table')).toContainText('completed') },
       { spec: 'Duplicate bytes summary is updated', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText(String(fixtureJPEG.length)) }
     ]

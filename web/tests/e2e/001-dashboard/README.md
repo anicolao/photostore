@@ -33,6 +33,7 @@ Register a source root, scan it, inspect the compact progress log, and drill int
 - [x] Latest progress message is visible
 - [x] Full job log is hidden by default
 - [x] Source last scan is no longer Never
+- [x] Source scan button is re-enabled
 - [x] Scan table shows completed scan
 - [x] Duplicate bytes summary is updated
 

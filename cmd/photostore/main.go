@@ -160,6 +160,34 @@ func run(args []string) error {
 		}
 		defer st.Close()
 		return printReport(st, *scanID)
+	case "metadata":
+		if len(args) < 2 || args[1] != "refresh-missing" {
+			return usage()
+		}
+		fs := flag.NewFlagSet("metadata refresh-missing", flag.ExitOnError)
+		storePath := fs.String("store", "./photostore-data", "store path")
+		verbose := fs.Bool("verbose", false, "print progress and final summary")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		st, err := photostore.Open(*storePath)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		summary, err := st.RefreshMissingMetadata(progress(*verbose))
+		if err != nil {
+			return err
+		}
+		fmt.Println(summary.RequestID)
+		if *verbose {
+			fmt.Printf("attempted: %d\n", summary.Attempted)
+			fmt.Printf("extracted: %d\n", summary.Extracted)
+			fmt.Printf("failed: %d\n", summary.Failed)
+			fmt.Printf("skipped: %d\n", summary.Skipped)
+			fmt.Printf("issues: %d\n", summary.Issues)
+		}
+		return nil
 	case "serve":
 		fs := flag.NewFlagSet("serve", flag.ExitOnError)
 		storePath := fs.String("store", "./photostore-data", "store path")
@@ -186,7 +214,7 @@ func run(args []string) error {
 }
 
 func usage() error {
-	return fmt.Errorf("usage: photostore init|source add|inventory acquire|inventory scan|scan|report|serve")
+	return fmt.Errorf("usage: photostore init|source add|inventory acquire|inventory scan|scan|report|metadata refresh-missing|serve")
 }
 
 func progress(verbose bool) photostore.ProgressFunc {

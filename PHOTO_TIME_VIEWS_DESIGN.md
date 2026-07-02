@@ -122,6 +122,33 @@ This event should be emitted when either:
 
 It should not be emitted merely because the same bytes appeared at another path.
 
+### `PhotoMetadataRefreshRequested`
+
+Records an explicit command to attempt metadata extraction for stored photo content that has no recorded metadata result for the active extractor version.
+
+A metadata result is either:
+
+- `PhotoMetadataExtracted`
+- `PhotoMetadataExtractionFailed`
+
+The refresh command must not retry content that already has either result for the active extractor version.
+
+Payload:
+
+```json
+{
+  "request_id": "meta_req_...",
+  "requested_at_ms": 1782931320123,
+  "selector": {
+    "type": "missing_metadata_results"
+  },
+  "extractor": {
+    "name": "photostore-exif",
+    "version": 1
+  }
+}
+```
+
 ### `PhotoMetadataExtractionFailed`
 
 Payload:
@@ -386,13 +413,14 @@ Example day response:
 Initial command APIs:
 
 ```text
+POST /api/metadata/refresh-missing
 POST /api/objects/{stored_object_id}/capture-time
 DELETE /api/objects/{stored_object_id}/capture-time
 ```
 
 Commands should append events. Read APIs should query projections.
 
-Metadata extraction normally runs during ingestion scans. A separate metadata command is only needed when intentionally running a new extractor version over already stored content.
+Metadata extraction normally runs during ingestion scans. `POST /api/metadata/refresh-missing` is an explicit maintenance command for stored photo content that has no success or failure result for the active extractor version.
 
 ## UI Design
 
