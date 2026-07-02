@@ -86,6 +86,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/acquired", s.handleScanAcquiredFiles)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/thumbnail", s.handleStoredObjectThumbnail)
+	s.mux.HandleFunc("GET /api/photos/dates", s.handlePhotoYears)
+	s.mux.HandleFunc("GET /api/photos/dates/{year}", s.handlePhotoMonths)
+	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}", s.handlePhotoDays)
+	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}/{day}", s.handleDatedPhotos)
+	s.mux.HandleFunc("GET /api/photos/undated", s.handleUndatedPhotos)
 	s.mux.HandleFunc("GET /api/inventories", s.handleInventories)
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
@@ -216,6 +221,51 @@ func (s *Server) handleScanAcquiredFiles(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, files)
+}
+
+func (s *Server) handlePhotoYears(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.store.PhotoYears()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePhotoMonths(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.store.PhotoMonths(r.PathValue("year"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePhotoDays(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.store.PhotoDays(r.PathValue("year"), r.PathValue("month"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleDatedPhotos(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.store.DatedPhotos(r.PathValue("year"), r.PathValue("month"), r.PathValue("day"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleUndatedPhotos(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.store.UndatedPhotos()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleStoredObjectBytes(w http.ResponseWriter, r *http.Request) {

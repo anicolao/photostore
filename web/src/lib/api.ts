@@ -1,4 +1,4 @@
-import type { AcquiredFile, HistoricalInventory, Job, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
+import type { AcquiredFile, DatedPhotoResponse, HistoricalInventory, Job, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -63,6 +63,13 @@ export function resumeScan(scanID: string): Promise<Job> {
   });
 }
 
+export function refreshMissingMetadata(): Promise<Job> {
+  return request('/api/metadata/refresh-missing', {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function getReport(scanID: string): Promise<ScanReport> {
   return request(`/api/scans/${scanID}/report`);
 }
@@ -73,4 +80,24 @@ export function getAcquiredFiles(scanID: string): Promise<AcquiredFile[]> {
 
 export function getInventories(): Promise<HistoricalInventory[]> {
   return request('/api/inventories');
+}
+
+export function getPhotoYears(): Promise<PhotoDateBucketResponse> {
+  return request('/api/photos/dates');
+}
+
+export function getPhotoMonths(year: string): Promise<PhotoDateBucketResponse> {
+  return request(`/api/photos/dates/${year}`);
+}
+
+export function getPhotoDays(year: string, month: string): Promise<PhotoDateBucketResponse> {
+  return request(`/api/photos/dates/${year}/${month}`);
+}
+
+export function getDatedPhotos(year: string, month: string, day: string): Promise<DatedPhotoResponse> {
+  return request(`/api/photos/dates/${year}/${month}/${day}`);
+}
+
+export function getUndatedPhotos(): Promise<DatedPhotoResponse> {
+  return request('/api/photos/undated');
 }

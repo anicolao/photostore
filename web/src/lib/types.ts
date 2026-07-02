@@ -49,6 +49,36 @@ export type AcquiredFile = {
   thumbnail_url: string;
 };
 
+export type PhotoDateBucket = {
+  bucket_key: string;
+  display_label: string;
+  photo_count: number;
+};
+
+export type PhotoDateBucketResponse = {
+  bucket_kind: 'year' | 'month' | 'day';
+  bucket_key: string;
+  buckets: PhotoDateBucket[];
+};
+
+export type DatedPhoto = {
+  stored_object_id: string;
+  content_ref: string;
+  filename: string;
+  relative_path: string;
+  capture_date?: string;
+  capture_time_local?: string;
+  utc_offset?: string;
+  precision?: string;
+  view_url: string;
+  thumbnail_url: string;
+};
+
+export type DatedPhotoResponse = {
+  bucket_key: string;
+  photos: DatedPhoto[];
+};
+
 export type HistoricalInventory = {
   historical_inventory_id: string;
   original_path: string;

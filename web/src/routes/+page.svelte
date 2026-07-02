@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { addSource, getInventories, getJobs, getScans, getSources, getStore, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
+  import { addSource, getInventories, getJobs, getScans, getSources, getStore, refreshMissingMetadata, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
   import type { HistoricalInventory, Job, ScanProjection, ServerEvent, SourceRoot, StoreSummary } from '$lib/types';
 
   let store: StoreSummary | null = null;
@@ -206,6 +206,10 @@
     await runScan(() => resumeScan(scanID));
   }
 
+  async function refreshMetadata() {
+    await runScan(refreshMissingMetadata);
+  }
+
   function formatBytes(bytes: number) {
     return new Intl.NumberFormat('en-CA').format(bytes);
   }
@@ -291,7 +295,11 @@
       <h1>Photostore</h1>
       <p data-testid="store-path">{store?.store_path ?? 'Loading store'}</p>
     </div>
-    <button on:click={() => refresh(true)} disabled={loading}>Refresh</button>
+    <div class="topbar-actions">
+      <a class="button-link" data-testid="photos-by-date-link" href="/photos/dates">Photos by date</a>
+      <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={runningJobActive}>Refresh metadata</button>
+      <button on:click={() => refresh(true)} disabled={loading}>Refresh</button>
+    </div>
   </header>
 
   {#if error}
@@ -448,6 +456,23 @@
     align-items: center;
     justify-content: space-between;
     gap: 16px;
+  }
+
+  .topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .button-link {
+    border: 1px solid #9aa0a6;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #202124;
+    padding: 7px 10px;
+    text-decoration: none;
   }
 
   h1,

@@ -1,6 +1,6 @@
 # Test: Dashboard Source Scan
 
-Register a source root, scan it, inspect the compact progress log, and drill into acquired photo thumbnails.
+Register a source root, scan it, inspect progress, drill into thumbnails, browse photos by date, and trigger metadata refresh.
 
 ## The initialized store dashboard starts empty.
 
@@ -80,6 +80,59 @@ Register a source root, scan it, inspect the compact progress log, and drill int
 - [x] Generated thumbnails are visible
 - [x] First acquired file link serves image/jpeg
 - [x] First thumbnail serves image/jpeg
+
+---
+
+## The date browser lists years derived from raw EXIF metadata.
+
+![The date browser lists years derived from raw EXIF metadata.](./screenshots/007-photos-by-date-years.png)
+
+**Verifications:**
+- [x] Photos by date heading is visible
+- [x] Capture year 2012 is listed
+- [x] Duplicate content is counted once in the year bucket
+
+---
+
+## Selecting a year lists capture months.
+
+![Selecting a year lists capture months.](./screenshots/008-photos-by-date-months.png)
+
+**Verifications:**
+- [x] Selected year heading is visible
+- [x] Capture month 2012-07 is listed
+
+---
+
+## Selecting a month lists capture days.
+
+![Selecting a month lists capture days.](./screenshots/009-photos-by-date-days.png)
+
+**Verifications:**
+- [x] Selected month heading is visible
+- [x] Capture day 2012-07-04 is listed
+
+---
+
+## Selecting a capture day opens a thumbnail grid for that date.
+
+![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/010-photos-by-date-thumbnails.png)
+
+**Verifications:**
+- [x] Selected capture day heading is visible
+- [x] Date photo grid lists the representative filename
+- [x] Date photo grid does not show duplicate content twice
+- [x] Date thumbnail is visible
+
+---
+
+## The dashboard can trigger a metadata refresh for photos without recorded metadata results.
+
+![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/011-metadata-refresh-triggered.png)
+
+**Verifications:**
+- [x] Metadata refresh job completed
+- [x] Metadata refresh reports no missing work after scan-time extraction
 
 ---
 
