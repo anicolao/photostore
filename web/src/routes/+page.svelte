@@ -191,7 +191,7 @@
               <div>
                 <strong>{source.label}</strong>
                 <code>{source.path}</code>
-                <span>Last scan: {formatScanTime(source.last_scan_completed_at_ms)}</span>
+                <span data-screenshot-mask>Last scan: {formatScanTime(source.last_scan_completed_at_ms)}</span>
               </div>
               <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={activeJob?.status === 'running'}>
                 Scan
@@ -246,7 +246,7 @@
         <tbody>
           {#each scans as scan}
             <tr>
-              <td><code>{scan.scan_id}</code></td>
+              <td><code data-screenshot-mask>{scan.scan_id}</code></td>
               <td>{scan.status}</td>
               <td>
                 <a data-testid="scan-acquired-link" href={`/scans/${scan.scan_id}`}>

@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
-const store = mkdtempSync(join(tmpdir(), 'photostore-e2e-store-'));
+const store = join(process.cwd(), '.e2e-store');
+rmSync(store, { recursive: true, force: true });
+mkdirSync(store, { recursive: true });
 const apiAddr = '127.0.0.1:18080';
 const env = { ...process.env, PHOTOSTORE_API_BASE: `http://${apiAddr}`, PHOTOSTORE_E2E_STORE: store };
 

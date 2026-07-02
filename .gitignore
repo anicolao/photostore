@@ -6,3 +6,5 @@
 /web/build/
 /web/playwright-report/
 /web/test-results/
+/web/.e2e-store/
+/web/.e2e-source/
