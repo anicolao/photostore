@@ -2,6 +2,7 @@ package photostore
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -17,39 +18,93 @@ const thumbnailRendererVersion = "orient-v2"
 const thumbnailPlaceholderSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180" role="img" aria-label="Thumbnail pending"><rect width="240" height="180" fill="#eef1f5"/><path d="M58 124l34-38 28 29 18-20 44 49H58z" fill="#c7d0db"/><circle cx="164" cy="58" r="18" fill="#d7dee7"/><text x="120" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#667085">thumbnail pending</text></svg>`
 
 type ThumbnailSummary struct {
-	Generated int
-	Skipped   int
-	Failed    int
+	ScanID    string           `json:"scan_id"`
+	Generated int              `json:"generated"`
+	Existing  int              `json:"already_present"`
+	Failed    int              `json:"unavailable"`
+	Issues    []ThumbnailIssue `json:"issues,omitempty"`
+}
+
+type ThumbnailIssue struct {
+	Filename       string `json:"filename"`
+	Source         string `json:"source"`
+	StoredObjectID string `json:"stored_object_id"`
+	Error          string `json:"error"`
 }
 
 func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) ThumbnailSummary {
 	files, err := s.AcquiredFiles(scanID)
 	if err != nil {
 		progressf(progress, "thumbnail scan lookup failed: %v", err)
-		return ThumbnailSummary{Failed: 1}
+		return ThumbnailSummary{ScanID: scanID, Failed: 1}
 	}
-	var summary ThumbnailSummary
+	summary := ThumbnailSummary{ScanID: scanID}
 	for _, file := range files {
 		thumb, ok, err := s.ThumbnailFile(file.StoredObjectID)
 		if err != nil {
 			summary.Failed++
+			summary.Issues = append(summary.Issues, thumbnailIssue(file, err))
 			progressf(progress, "thumbnail path failed for %s: %v", file.Filename, err)
 			continue
 		}
 		if ok {
-			summary.Skipped++
+			summary.Existing++
 			continue
 		}
 		if err := s.writeThumbnailForObject(file.StoredObjectID, thumb); err != nil {
 			summary.Failed++
-			progressf(progress, "thumbnail unavailable for %s: %v", file.Filename, err)
+			summary.Issues = append(summary.Issues, thumbnailIssue(file, err))
+			progressf(progress, "thumbnail unavailable for %s (%s; object %s): %v", file.Filename, thumbnailSourceLabel(file), file.StoredObjectID, err)
 			continue
 		}
 		summary.Generated++
 		progressf(progress, "thumbnail generated for %s", file.Filename)
 	}
-	progressf(progress, "thumbnails generated: %d, skipped: %d, unavailable: %d", summary.Generated, summary.Skipped, summary.Failed)
+	progressf(progress, "thumbnails generated: %d, already present: %d, unavailable: %d", summary.Generated, summary.Existing, summary.Failed)
+	if err := s.writeThumbnailReport(summary); err != nil {
+		progressf(progress, "thumbnail report write failed: %v", err)
+	}
 	return summary
+}
+
+func thumbnailIssue(file AcquiredFileProjection, err error) ThumbnailIssue {
+	return ThumbnailIssue{
+		Filename:       file.Filename,
+		Source:         thumbnailSourceLabel(file),
+		StoredObjectID: file.StoredObjectID,
+		Error:          err.Error(),
+	}
+}
+
+func thumbnailSourceLabel(file AcquiredFileProjection) string {
+	if file.RelativePath != "" {
+		return file.RelativePath
+	}
+	return file.Path
+}
+
+func (s *Store) writeThumbnailReport(summary ThumbnailSummary) error {
+	path := filepath.Join(s.Root, "reports", "thumbnails-scan-"+summary.ScanID+".json")
+	b, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func (s *Store) ThumbnailReport(scanID string) (*ThumbnailSummary, error) {
+	b, err := os.ReadFile(filepath.Join(s.Root, "reports", "thumbnails-scan-"+scanID+".json"))
+	if err != nil {
+		return nil, err
+	}
+	var summary ThumbnailSummary
+	if err := json.Unmarshal(b, &summary); err != nil {
+		return nil, err
+	}
+	if summary.ScanID == "" {
+		summary.ScanID = scanID
+	}
+	return &summary, nil
 }
 
 func (s *Store) EnsureThumbnailForObject(storedObjectID string) error {

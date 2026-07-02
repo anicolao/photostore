@@ -1,16 +1,23 @@
 package photostore
 
 import (
+	"bufio"
 	"bytes"
 	"database/sql"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +138,94 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	}
 }
 
+func TestServerJobEventsWebSocketStreamsSnapshotAndProgress(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), testJPEG(t))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	conn, reader := dialEventWebSocket(t, ts.URL)
+	defer conn.Close()
+	initial := readWebSocketEvent(t, conn, reader)
+	if initial.Type != "job_snapshot" {
+		t.Fatalf("initial event type = %q, want job_snapshot", initial.Type)
+	}
+
+	postJSON(t, ts.URL+"/api/sources", map[string]string{"path": sourcePath, "label": "fixture"}, http.StatusCreated)
+	var started Job
+	postJSONInto(t, ts.URL+"/api/scans", map[string]string{}, http.StatusAccepted, &started)
+
+	progressSeen := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		event := readWebSocketEvent(t, conn, reader)
+		if event.Type == "job_progress" && event.Job != nil && event.Job.JobID == started.JobID && len(event.Job.Progress) > 0 {
+			progressSeen = true
+		}
+		if event.Type == "job_finished" && event.Job != nil && event.Job.JobID == started.JobID {
+			if event.Job.Status != "completed" {
+				t.Fatalf("finished job status = %s, want completed", event.Job.Status)
+			}
+			if !progressSeen {
+				t.Fatal("job finished before any progress event was observed")
+			}
+			return
+		}
+	}
+	t.Fatal("timed out waiting for websocket job_finished event")
+}
+
+func TestServerJobsIncludePersistedScanJobsAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), testJPEG(t))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	postJSON(t, ts.URL+"/api/sources", map[string]string{"path": sourcePath, "label": "fixture"}, http.StatusCreated)
+	var started Job
+	postJSONInto(t, ts.URL+"/api/scans", map[string]string{}, http.StatusAccepted, &started)
+	done := waitJob(t, ts.URL, started.JobID)
+	if done.Status != "completed" {
+		t.Fatalf("job status = %s, error = %v", done.Status, done.Error)
+	}
+	ts.Close()
+
+	restarted := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer restarted.Close()
+	var jobs []Job
+	getJSON(t, restarted.URL+"/api/jobs", &jobs)
+	if len(jobs) == 0 {
+		t.Fatal("no jobs returned after server restart")
+	}
+	if jobs[0].JobID != scanJobID(*done.ResultRef) {
+		t.Fatalf("job id = %s, want persisted scan job %s", jobs[0].JobID, scanJobID(*done.ResultRef))
+	}
+	if jobs[0].Status != "completed" {
+		t.Fatalf("persisted job status = %s, want completed", jobs[0].Status)
+	}
+	if jobs[0].ResultRef == nil || *jobs[0].ResultRef != *done.ResultRef {
+		t.Fatalf("persisted job result = %#v, want %s", jobs[0].ResultRef, *done.ResultRef)
+	}
+	if !strings.Contains(strings.Join(jobs[0].Progress, "\n"), "thumbnails generated: 1, already present: 0, unavailable: 0") {
+		t.Fatalf("persisted job progress missing thumbnail summary: %#v", jobs[0].Progress)
+	}
+}
+
 func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
@@ -153,6 +248,13 @@ func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
 	if done.Status != "completed" {
 		t.Fatalf("job status = %s, error = %v", done.Status, done.Error)
 	}
+	progress := strings.Join(done.Progress, "\n")
+	if !strings.Contains(progress, "thumbnail unavailable for bad.JPG (bad.JPG; object ") {
+		t.Fatalf("thumbnail progress did not identify unavailable file: %s", progress)
+	}
+	if !strings.Contains(progress, "thumbnails generated: 0, already present: 0, unavailable: 1") {
+		t.Fatalf("thumbnail summary is not actionable: %s", progress)
+	}
 	var acquired []AcquiredFileProjection
 	getJSON(t, ts.URL+"/api/scans/"+*done.ResultRef+"/acquired", &acquired)
 	if len(acquired) != 1 {
@@ -166,6 +268,87 @@ func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
 	if got := placeholder.Header.Get("Content-Type"); got != "image/svg+xml" {
 		t.Fatalf("placeholder content type = %q, want image/svg+xml", got)
 	}
+}
+
+func dialEventWebSocket(t *testing.T, baseURL string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("tcp", parsed.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.StdEncoding.EncodeToString([]byte("photostore-test!"))
+	if _, err := io.WriteString(conn, "GET /api/events/ws HTTP/1.1\r\nHost: "+parsed.Host+"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "+key+"\r\n\r\n"); err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	res, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusSwitchingProtocols {
+		conn.Close()
+		t.Fatalf("websocket upgrade status = %d, want 101", res.StatusCode)
+	}
+	return conn, reader
+}
+
+func readWebSocketEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) ServerEvent {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	payload := readWebSocketFrame(t, reader)
+	var event ServerEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		t.Fatal(err)
+	}
+	return event
+}
+
+func readWebSocketFrame(t *testing.T, reader *bufio.Reader) []byte {
+	t.Helper()
+	first, err := reader.ReadByte()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := reader.ReadByte()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opcode := first & 0x0f
+	if opcode != 1 {
+		t.Fatalf("websocket opcode = %d, want text", opcode)
+	}
+	if second&0x80 != 0 {
+		t.Fatal("server websocket frame unexpectedly masked")
+	}
+	length := uint64(second & 0x7f)
+	switch length {
+	case 126:
+		var size [2]byte
+		if _, err := io.ReadFull(reader, size[:]); err != nil {
+			t.Fatal(err)
+		}
+		length = uint64(binary.BigEndian.Uint16(size[:]))
+	case 127:
+		var size [8]byte
+		if _, err := io.ReadFull(reader, size[:]); err != nil {
+			t.Fatal(err)
+		}
+		length = binary.BigEndian.Uint64(size[:])
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
 }
 
 func TestServerServesExistingThumbnailWhileDatabaseIsLocked(t *testing.T) {

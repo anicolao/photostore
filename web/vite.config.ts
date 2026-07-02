@@ -7,7 +7,8 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: process.env.PHOTOSTORE_API_BASE ?? 'http://127.0.0.1:8080',
-        changeOrigin: true
+        changeOrigin: true,
+        ws: true
       }
     }
   }

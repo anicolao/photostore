@@ -59,10 +59,17 @@ export type HistoricalInventory = {
 export type Job = {
   job_id: string;
   kind: string;
-  status: 'running' | 'completed' | 'failed';
+  status: 'running' | 'completed' | 'failed' | 'interrupted';
   started_at_ms: number;
   finished_at_ms: number | null;
   result_ref: string | null;
   error: string | null;
   progress: string[];
+};
+
+export type ServerEvent = {
+  type: 'job_snapshot' | 'job_started' | 'job_progress' | 'job_finished' | 'projection_changed';
+  recorded_at_ms: number;
+  job?: Job;
+  jobs?: Job[];
 };

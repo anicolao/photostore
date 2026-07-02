@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { addSource, getInventories, getJob, getJobs, getScans, getSources, getStore, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
-  import type { HistoricalInventory, Job, ScanProjection, SourceRoot, StoreSummary } from '$lib/types';
+  import { addSource, getInventories, getJobs, getScans, getSources, getStore, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
+  import type { HistoricalInventory, Job, ScanProjection, ServerEvent, SourceRoot, StoreSummary } from '$lib/types';
 
   let store: StoreSummary | null = null;
   let sources: SourceRoot[] = [];
   let scans: ScanProjection[] = [];
   let inventories: HistoricalInventory[] = [];
+  let jobs: Job[] = [];
   let activeJob: Job | null = null;
   let sourcePath = '';
   let sourceLabel = '';
@@ -14,12 +15,15 @@
   let loading = true;
   let jobLogOpen = false;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let eventsSocket: WebSocket | undefined;
+  let eventsClosed = false;
 
   async function refresh(showLoading = false) {
     if (showLoading) {
       loading = true;
     }
-    const [nextStore, nextSources, nextScans, nextInventories, jobs] = await Promise.all([
+    const [nextStore, nextSources, nextScans, nextInventories, nextJobs] = await Promise.all([
       getStore(),
       getSources(),
       getScans(),
@@ -30,10 +34,8 @@
     sources = nextSources;
     scans = nextScans;
     inventories = nextInventories;
-    const runningJob = jobs.find((job) => job.status === 'running') ?? null;
-    if (runningJob || activeJob?.status === 'running') {
-      activeJob = runningJob;
-    }
+    jobs = nextJobs;
+    applyJobs(nextJobs);
     if (showLoading) {
       loading = false;
     }
@@ -51,6 +53,102 @@
     }
   }
 
+  function connectEvents() {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    if (eventsSocket && (eventsSocket.readyState === WebSocket.CONNECTING || eventsSocket.readyState === WebSocket.OPEN)) {
+      return;
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    eventsSocket = new WebSocket(`${protocol}//${window.location.host}/api/events/ws`);
+    eventsSocket.onmessage = (message) => {
+      applyServerEvent(JSON.parse(message.data) as ServerEvent);
+    };
+    eventsSocket.onclose = () => {
+      eventsSocket = undefined;
+      if (!eventsClosed) {
+        reconnectTimer = setTimeout(connectEvents, 1000);
+      }
+    };
+    eventsSocket.onerror = () => {
+      eventsSocket?.close();
+    };
+  }
+
+  function applyServerEvent(event: ServerEvent) {
+    if (event.type === 'job_snapshot') {
+      applyJobs(event.jobs ?? []);
+      return;
+    }
+    if (event.job) {
+      jobs = upsertJob(jobs, event.job);
+      activeJob = event.job;
+      if (event.type === 'job_finished') {
+        refresh().catch(() => {
+          // Keep the streamed job visible if projections lag or a transient read fails.
+        });
+      }
+      return;
+    }
+    if (event.type === 'projection_changed') {
+      refresh().catch(() => {
+        // The next projection refresh or event reconnect will catch up.
+      });
+    }
+  }
+
+  function applyJobs(jobs: Job[]) {
+    const runningJob = jobs.find((job) => job.status === 'running');
+    if (runningJob) {
+      activeJob = runningJob;
+      return;
+    }
+    const currentJob = activeJob ? jobs.find((job) => job.job_id === activeJob?.job_id) : undefined;
+    if (currentJob) {
+      activeJob = currentJob;
+      return;
+    }
+    activeJob = latestJob(jobs);
+  }
+
+  function latestJob(jobs: Job[]) {
+    return jobs.toSorted((a, b) => b.started_at_ms - a.started_at_ms)[0] ?? null;
+  }
+
+  function upsertJob(existing: Job[], next: Job) {
+    const withoutNext = existing.filter((job) => job.job_id !== next.job_id);
+    return latestJobs([next, ...withoutNext]);
+  }
+
+  function latestJobs(nextJobs: Job[]) {
+    return nextJobs.toSorted((a, b) => b.started_at_ms - a.started_at_ms);
+  }
+
+  function jobForScan(scanID: string) {
+    return jobs.find((job) => job.result_ref === scanID) ?? null;
+  }
+
+  function selectScanStatus(scan: ScanProjection) {
+    activeJob = jobForScan(scan.scan_id) ?? scanAsJob(scan);
+    jobLogOpen = false;
+  }
+
+  function scanAsJob(scan: ScanProjection): Job {
+    const startedAt = scan.started_at_ms ?? scan.completed_at_ms ?? 0;
+    const progress = [`scan ${scan.scan_id}: ${scan.status}`];
+    return {
+      job_id: `scan_job_${scan.scan_id}`,
+      kind: 'scan',
+      status: scan.status === 'started' ? 'interrupted' : (scan.status as Job['status']),
+      started_at_ms: startedAt,
+      finished_at_ms: scan.completed_at_ms,
+      result_ref: scan.scan_id,
+      error: null,
+      progress
+    };
+  }
+
   async function submitSource() {
     error = '';
     await addSource(sourcePath, sourceLabel);
@@ -64,17 +162,8 @@
     jobLogOpen = false;
     try {
       activeJob = await start();
-      while (activeJob.status === 'running') {
-        await sleep(150);
-        activeJob = await getJob(activeJob.job_id);
-      }
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        await refresh();
-        if (!activeJob.result_ref || scans.some((scan) => scan.scan_id === activeJob?.result_ref)) {
-          return;
-        }
-        await sleep(150);
-      }
+      connectEvents();
+      await refresh();
     } catch (err) {
       error = String(err);
     }
@@ -90,10 +179,6 @@
 
   async function resume(scanID: string) {
     await runScan(() => resumeScan(scanID));
-  }
-
-  function sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   function formatBytes(bytes: number) {
@@ -116,14 +201,18 @@
   }
 
   function canResume(scan: ScanProjection) {
-    return scan.status === 'started' && activeJob?.status !== 'running';
+    return scan.status === 'started' && !hasRunningJob();
   }
 
   function scanStatus(scan: ScanProjection) {
     if (scan.status === 'started') {
-      return activeJob?.status === 'running' ? 'running' : 'incomplete';
+      return hasRunningJob() ? 'running' : 'incomplete';
     }
     return scan.status;
+  }
+
+  function hasRunningJob() {
+    return jobs.some((job) => job.status === 'running') || activeJob?.status === 'running';
   }
 
   function formatOptionalBytes(value: number | null | undefined) {
@@ -149,6 +238,7 @@
 
   onMount(() => {
     load();
+    connectEvents();
     refreshTimer = setInterval(() => {
       if (activeJob?.status !== 'running') {
         refresh().catch(() => {
@@ -162,6 +252,11 @@
     if (refreshTimer) {
       clearInterval(refreshTimer);
     }
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+    }
+    eventsClosed = true;
+    eventsSocket?.close();
   });
 </script>
 
@@ -205,7 +300,7 @@
     <section aria-labelledby="sources-heading">
       <div class="section-heading">
         <h2 id="sources-heading">Source roots</h2>
-        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={activeJob?.status === 'running'}>
+        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={hasRunningJob()}>
           Scan
         </button>
       </div>
@@ -225,7 +320,7 @@
                 <code>{source.path}</code>
                 <span>Last scan: {formatScanTime(source.last_scan_completed_at_ms)}</span>
               </div>
-              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={activeJob?.status === 'running'}>
+              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={hasRunningJob()}>
                 Scan
               </button>
             </li>
@@ -236,7 +331,7 @@
 
     <section aria-labelledby="job-heading">
       <div class="section-heading">
-        <h2 id="job-heading">Active job</h2>
+        <h2 id="job-heading">Job status</h2>
         {#if activeJob && activeJob.progress.length > 0}
           <button data-testid="toggle-job-log" on:click={() => (jobLogOpen = !jobLogOpen)}>
             {jobLogOpen ? 'Close log' : 'Open log'}
@@ -255,7 +350,7 @@
           </div>
         {/if}
       {:else}
-        <p class="empty" data-testid="job-empty">No job running.</p>
+        <p class="empty" data-testid="job-empty">No jobs yet.</p>
       {/if}
     </section>
   </div>
@@ -293,6 +388,7 @@
               <td>{formatOptionalNumber(scan.report?.duplicate_acquisitions)}</td>
               <td>{formatOptionalBytes(scan.report?.duplicate_garbage_bytes)}</td>
               <td>
+                <button data-testid="scan-status-{scan.scan_id}" on:click={() => selectScanStatus(scan)}>Status</button>
                 {#if canResume(scan)}
                   <button data-testid="resume-scan-{scan.scan_id}" on:click={() => resume(scan.scan_id)}>Resume</button>
                 {/if}
