@@ -95,6 +95,9 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if metadataFailures[0].ErrorMessage == "" {
 		t.Fatalf("metadata failure missing error message: %#v", metadataFailures[0])
 	}
+	if metadataFailures[0].Width == 0 || metadataFailures[0].Height == 0 || metadataFailures[0].PixelCount == 0 {
+		t.Fatalf("metadata failure missing dimensions: %#v", metadataFailures[0])
+	}
 	var metadataMissing []MetadataPhotoProjection
 	getJSON(t, ts.URL+"/api/metadata/missing", &metadataMissing)
 	if len(metadataMissing) != 0 {

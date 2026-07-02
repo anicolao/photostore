@@ -106,6 +106,9 @@ export type MetadataPhoto = {
   relative_path: string;
   status: 'failed' | 'missing';
   error_message?: string;
+  width?: number;
+  height?: number;
+  pixel_count?: number;
   view_url: string;
   thumbnail_url: string;
 };

@@ -32,6 +32,8 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   mkdirSync(source, { recursive: true });
   writeFileSync(`${source}/A.JPG`, fixtureJPEGWithEXIF);
   writeFileSync(`${source}/B.jpeg`, fixtureJPEGWithEXIF);
+  writeFileSync(`${source}/poster.JPG`, jpegWithoutEXIFDimensions(2400, 1600));
+  writeFileSync(`${source}/crop.JPG`, fixtureJPEG);
   writeFileSync(`${source}/bad.JPG`, 'not really a jpeg');
   writeFileSync(`${source}/notes.txt`, 'not media');
 
@@ -178,10 +180,17 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     verifications: [
       { spec: 'Metadata heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Metadata', exact: true })).toBeVisible() },
       { spec: 'One unique content item has extracted metadata', check: async () => await expect(page.getByTestId('metadata-extracted-count')).toHaveText('1') },
-      { spec: 'One photo has no metadata found', check: async () => await expect(page.getByTestId('metadata-failed-count')).toHaveText('1') },
+      { spec: 'Three photos have no metadata found', check: async () => await expect(page.getByTestId('metadata-failed-count')).toHaveText('3') },
       { spec: 'No current extractor work remains unscanned', check: async () => await expect(page.getByTestId('metadata-missing-count')).toHaveText('0') },
       { spec: 'Failed metadata list identifies bad.JPG', check: async () => await expect(page.getByTestId('metadata-failures-list')).toContainText('bad.JPG') },
+      { spec: 'Main metadata failure list keeps the large no-EXIF photo visible', check: async () => await expect(page.getByTestId('metadata-failures-list')).toContainText('poster.JPG') },
+      { spec: 'Main metadata failure list hides the small crop by default', check: async () => await expect(page.getByTestId('metadata-failures-list')).not.toContainText('crop.JPG') },
+      { spec: 'Small metadata failures are collapsed with a count', check: async () => await expect(page.getByTestId('metadata-small-failures-count')).toHaveText('1') },
       { spec: 'Failed metadata list shows the extraction error', check: async () => await expect(page.getByTestId('metadata-failures-list')).toContainText('not a JPEG file') },
+      { spec: 'Opening likely thumbnails or crops reveals crop.JPG', check: async () => {
+        await page.getByTestId('metadata-small-failures').click();
+        await expect(page.getByTestId('metadata-small-failures-list')).toContainText('crop.JPG');
+      } },
       { spec: 'Unscanned metadata empty state is visible', check: async () => await expect(page.getByTestId('metadata-missing-empty')).toBeVisible() }
     ]
   });
@@ -204,6 +213,30 @@ function jpegWithEXIF(base: Buffer, fields: Array<[number, string]>) {
   const segmentLength = payload.length + 2;
   const app1 = Buffer.from([0xff, 0xe1, segmentLength >> 8, segmentLength & 0xff]);
   return Buffer.concat([base.subarray(0, 2), app1, payload, base.subarray(2)]);
+}
+
+function jpegWithoutEXIFDimensions(width: number, height: number) {
+  const sof = Buffer.from([
+    0xff, 0xc0,
+    0x00, 0x11,
+    0x08,
+    (height >> 8) & 0xff, height & 0xff,
+    (width >> 8) & 0xff, width & 0xff,
+    0x03,
+    0x01, 0x11, 0x00,
+    0x02, 0x11, 0x00,
+    0x03, 0x11, 0x00
+  ]);
+  const sos = Buffer.from([
+    0xff, 0xda,
+    0x00, 0x0c,
+    0x03,
+    0x01, 0x00,
+    0x02, 0x11,
+    0x03, 0x11,
+    0x00, 0x3f, 0x00
+  ]);
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), sof, sos, Buffer.from([0x00, 0xff, 0xd9])]);
 }
 
 function exifPayload(fields: Array<[number, string]>) {

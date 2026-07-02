@@ -259,6 +259,67 @@ func extractJPEGMetadata(path string) (metadataObservation, error) {
 	return metadataObservation{Fields: fields}, nil
 }
 
+func jpegDimensions(path string) (int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	var header [2]byte
+	if _, err := io.ReadFull(f, header[:]); err != nil {
+		return 0, 0, err
+	}
+	if header != [2]byte{0xff, 0xd8} {
+		return 0, 0, errors.New("not a JPEG file")
+	}
+	for {
+		marker, err := nextJPEGMarker(f)
+		if err != nil {
+			return 0, 0, err
+		}
+		if marker == 0xda || marker == 0xd9 {
+			return 0, 0, errors.New("missing JPEG dimensions")
+		}
+		var lenBuf [2]byte
+		if _, err := io.ReadFull(f, lenBuf[:]); err != nil {
+			return 0, 0, err
+		}
+		segmentLen := int(binary.BigEndian.Uint16(lenBuf[:]))
+		if segmentLen < 2 {
+			return 0, 0, fmt.Errorf("invalid jpeg segment length %d", segmentLen)
+		}
+		payloadLen := segmentLen - 2
+		if !jpegStartOfFrameMarker(marker) {
+			if _, err := io.CopyN(io.Discard, f, int64(payloadLen)); err != nil {
+				return 0, 0, err
+			}
+			continue
+		}
+		if payloadLen < 5 {
+			return 0, 0, errors.New("truncated JPEG dimensions")
+		}
+		payload := make([]byte, 5)
+		if _, err := io.ReadFull(f, payload); err != nil {
+			return 0, 0, err
+		}
+		height := int(binary.BigEndian.Uint16(payload[1:3]))
+		width := int(binary.BigEndian.Uint16(payload[3:5]))
+		if width <= 0 || height <= 0 {
+			return 0, 0, fmt.Errorf("invalid JPEG dimensions %dx%d", width, height)
+		}
+		return width, height, nil
+	}
+}
+
+func jpegStartOfFrameMarker(marker byte) bool {
+	switch marker {
+	case 0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf:
+		return true
+	default:
+		return false
+	}
+}
+
 func jpegEXIFPayload(r io.Reader) ([]byte, error) {
 	var header [2]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {

@@ -10,6 +10,10 @@
   let failuresLoading = true;
   let missingLoading = true;
   let error = '';
+  const thumbnailPixelLimit = 1_000_000;
+
+  $: likelySmallFailures = failures.filter(isLikelyThumbnailOrCrop);
+  $: reviewFailures = failures.filter((photo) => !isLikelyThumbnailOrCrop(photo));
 
   onMount(async () => {
     void loadSummary();
@@ -58,6 +62,16 @@
     const filename = photo.filename || photo.relative_path.split(/[\\/]/).pop() || photo.relative_path;
     if (!photo.relative_path || photo.relative_path === filename) return '';
     return photo.relative_path.slice(0, Math.max(0, photo.relative_path.length - filename.length)).replace(/[\\/]$/, '');
+  }
+
+  function isLikelyThumbnailOrCrop(photo: MetadataPhoto) {
+    return Boolean(photo.pixel_count && photo.pixel_count > 0 && photo.pixel_count < thumbnailPixelLimit);
+  }
+
+  function dimensionsLabel(photo: MetadataPhoto) {
+    if (!photo.width || !photo.height) return 'Dimensions unknown';
+    const megapixels = photo.pixel_count ? photo.pixel_count / 1_000_000 : (photo.width * photo.height) / 1_000_000;
+    return `${photo.width} x ${photo.height} (${megapixels.toFixed(2)} MP)`;
   }
 </script>
 
@@ -111,13 +125,14 @@
       <p class="empty" data-testid="metadata-failures-empty">No metadata failures.</p>
     {:else}
       <div class="photo-list" data-testid="metadata-failures-list">
-        {#each failures as photo}
+        {#each reviewFailures as photo}
           <a class="photo-row" data-testid="metadata-failure" href={photo.view_url}>
             <span class="thumb-wrap">
               <img src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
             </span>
             <span class="details">
               <strong>{photo.filename}</strong>
+              <span>{dimensionsLabel(photo)}</span>
               {#if directoryName(photo)}
                 <span>{directoryName(photo)}</span>
               {/if}
@@ -128,6 +143,33 @@
           </a>
         {/each}
       </div>
+      {#if likelySmallFailures.length > 0}
+        <details class="small-failures" data-testid="metadata-small-failures">
+          <summary>
+            <span>Likely thumbnails or crops</span>
+            <strong data-testid="metadata-small-failures-count">{likelySmallFailures.length}</strong>
+          </summary>
+          <div class="photo-list" data-testid="metadata-small-failures-list">
+            {#each likelySmallFailures as photo}
+              <a class="photo-row" data-testid="metadata-small-failure" href={photo.view_url}>
+                <span class="thumb-wrap">
+                  <img src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
+                </span>
+                <span class="details">
+                  <strong>{photo.filename}</strong>
+                  <span>{dimensionsLabel(photo)}</span>
+                  {#if directoryName(photo)}
+                    <span>{directoryName(photo)}</span>
+                  {/if}
+                  {#if photo.error_message}
+                    <span class="reason">{photo.error_message}</span>
+                  {/if}
+                </span>
+              </a>
+            {/each}
+          </div>
+        </details>
+      {/if}
     {/if}
   </section>
 
@@ -277,6 +319,28 @@
 
   .details .reason {
     color: #a50e0e;
+  }
+
+  .small-failures {
+    margin-top: 14px;
+    border-top: 1px solid #eef1f5;
+    padding-top: 12px;
+  }
+
+  summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+    color: #3c4043;
+  }
+
+  summary strong {
+    border-radius: 999px;
+    background: #eef1f5;
+    padding: 2px 8px;
+    font-size: 12px;
   }
 
   .error {
