@@ -191,22 +191,26 @@ func (s *Server) handleStoredObjectBytes(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleStoredObjectThumbnail(w http.ResponseWriter, r *http.Request) {
 	storedObjectID := r.PathValue("stored_object_id")
-	if _, err := s.store.StoredObjectFile(storedObjectID); err != nil {
-		writeErrorStatus(w, http.StatusNotFound, err)
-		return
-	}
 	path, ok, err := s.store.ThumbnailFile(storedObjectID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if !ok {
-		if err := s.store.EnsureThumbnailForObject(storedObjectID); err != nil {
-			w.Header().Set("Content-Type", "image/svg+xml")
-			w.Header().Set("Cache-Control", "no-store")
-			_, _ = w.Write([]byte(thumbnailPlaceholderSVG))
-			return
-		}
+	if ok {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Content-Disposition", "inline")
+		http.ServeFile(w, r, path)
+		return
+	}
+	if _, err := s.store.StoredObjectFile(storedObjectID); err != nil {
+		writeErrorStatus(w, http.StatusNotFound, err)
+		return
+	}
+	if err := s.store.EnsureThumbnailForObject(storedObjectID); err != nil {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(thumbnailPlaceholderSVG))
+		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Content-Disposition", "inline")

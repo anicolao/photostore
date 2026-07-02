@@ -137,12 +137,32 @@ func Open(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	st := &Store{Root: abs, DB: db}
+	if err := st.configureSQLite(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := st.initSchema(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return st, nil
+}
+
+func (s *Store) configureSQLite() error {
+	pragmas := []string{
+		`pragma busy_timeout = 10000`,
+		`pragma journal_mode = wal`,
+		`pragma synchronous = normal`,
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.DB.Exec(pragma); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func requireInitialized(root string) error {

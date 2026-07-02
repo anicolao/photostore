@@ -2,6 +2,7 @@ package photostore
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
@@ -162,6 +165,88 @@ func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
 	defer placeholder.Body.Close()
 	if got := placeholder.Header.Get("Content-Type"); got != "image/svg+xml" {
 		t.Fatalf("placeholder content type = %q, want image/svg+xml", got)
+	}
+}
+
+func TestServerServesExistingThumbnailWhileDatabaseIsLocked(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), testJPEG(t))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sourceID, err := st.AddSourceRoot(sourcePath, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanID, err := st.ScanSourceRoots([]string{sourceID}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.EnsureThumbnailsForScan(scanID, nil)
+	acquired, err := st.AcquiredFiles(scanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acquired) != 1 {
+		t.Fatalf("acquired files = %d, want 1", len(acquired))
+	}
+	lockDB, err := sql.Open("sqlite", filepath.Join(storePath, "projections.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockDB.Close()
+	if _, err := lockDB.Exec(`pragma busy_timeout = 1`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := lockDB.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`insert into events_applied(event_id,event_type,recorded_at_ms) values(?,?,?)`, "evt_external_lock", "TestLock", int64(1)); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+	res, err := http.Get(ts.URL + acquired[0].ThumbnailURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("thumbnail status = %d, want 200", res.StatusCode)
+	}
+	if got := res.Header.Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("thumbnail content type = %q, want image/jpeg", got)
+	}
+}
+
+func TestStoreConfiguresSQLiteForInteractiveReadsDuringWrites(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var busyTimeout int
+	if err := st.DB.QueryRow(`pragma busy_timeout`).Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if busyTimeout < 10000 {
+		t.Fatalf("busy_timeout = %d, want at least 10000", busyTimeout)
+	}
+	var journalMode string
+	if err := st.DB.QueryRow(`pragma journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatal(err)
+	}
+	if journalMode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journalMode)
 	}
 }
 
