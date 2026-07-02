@@ -142,7 +142,7 @@ func requireInitialized(root string) error {
 	for _, path := range required {
 		info, err := os.Stat(path)
 		if err != nil {
-			return fmt.Errorf("store is not initialized at %s; run `photostore init --store %s` first", root, root)
+			return fmt.Errorf("store is not initialized at %s; run `photostore init` to initialize the default store, or pass `--store PATH` to use a different initialized store", root)
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("store is not initialized at %s; %s is not a directory", root, path)

@@ -112,8 +112,12 @@ func TestOpenUninitializedStoreReturnsActionableError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Open succeeded for an uninitialized store")
 	}
-	if got := err.Error(); !strings.Contains(got, "photostore init --store") {
-		t.Fatalf("error = %q, want init guidance", got)
+	got := err.Error()
+	if !strings.Contains(got, "photostore init") {
+		t.Fatalf("error = %q, want default init guidance", got)
+	}
+	if !strings.Contains(got, "--store PATH") {
+		t.Fatalf("error = %q, want alternate store guidance", got)
 	}
 }
 
