@@ -41,9 +41,9 @@ type Event struct {
 }
 
 type SourceRoot struct {
-	ID    string
-	Path  string
-	Label string
+	ID    string `json:"source_root_id"`
+	Path  string `json:"path"`
+	Label string `json:"label"`
 }
 
 type ScanReport struct {

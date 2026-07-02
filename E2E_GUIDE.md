@@ -20,24 +20,26 @@ generated from test steps.
 
 ## Tooling
 
-Use Playwright with Chromium only for the MVP.
+Use Playwright with Chromium only for the MVP. Use Bun for frontend package
+management and scripts.
 
 The frontend package should provide:
 
 ```json
 {
   "scripts": {
-    "dev": "vite dev --port 5174 --strictPort",
+    "dev": "vite dev --host 127.0.0.1 --port 5174 --strictPort",
     "build": "vite build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test:e2e:install": "playwright install chromium",
     "test:e2e": "playwright test",
     "test:e2e:update-snapshots": "playwright test --update-snapshots"
   }
 }
 ```
 
-The Nix development shell should include Node.js and the system libraries needed
-for Playwright's Chromium runtime.
+The Nix development shell should include Bun, Node.js, and the system libraries
+needed for Playwright's Chromium runtime.
 
 ## Directory Layout
 
@@ -111,7 +113,7 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: 'npm run dev',
+    command: 'bun run dev',
     url: 'http://127.0.0.1:5174',
     reuseExistingServer: !process.env.CI
   }
@@ -122,7 +124,7 @@ If the implementation uses a separate Go API server during tests, the
 Playwright web server command should run a wrapper script that starts both:
 
 ```sh
-npm --prefix web run test-server
+cd web && bun run test-server
 ```
 
 That script should create a temporary Photostore store, start
@@ -244,7 +246,7 @@ Screenshots are committed artifacts. Before updating them:
 
 1. Run the scenario locally.
 2. Inspect the rendered UI and generated README.
-3. Update snapshots with `npm --prefix web run test:e2e:update-snapshots`.
+3. Update snapshots with `cd web && bun run test:e2e:update-snapshots`.
 4. Review the image diff before committing.
 
 Keep animations disabled or behind `prefers-reduced-motion` so screenshots are
@@ -256,10 +258,11 @@ The expected CI checks are:
 
 ```sh
 nix develop --command go test ./...
-nix develop --command npm --prefix web ci
-nix develop --command npm --prefix web run check
-nix develop --command npm --prefix web run build
-nix develop --command npm --prefix web run test:e2e
+nix develop --command sh -c 'cd web && bun install --frozen-lockfile'
+nix develop --command sh -c 'cd web && bun run check'
+nix develop --command sh -c 'cd web && bun run build'
+nix develop --command sh -c 'cd web && bun run test:e2e:install'
+nix develop --command sh -c 'cd web && bun run test:e2e'
 ```
 
 The implementation PR that adds the UI should also add GitHub Actions wiring for

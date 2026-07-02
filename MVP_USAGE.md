@@ -27,13 +27,18 @@ If you use `direnv`:
 direnv allow
 ```
 
-The development shell provides Go, SQLite, Git, and GitHub CLI tooling.
+The development shell provides Go, Bun, Node.js, SQLite, Git, and GitHub CLI tooling.
 
 ## Build And Test
 
 ```sh
 go test ./...
 go build ./cmd/photostore
+cd web && bun install --frozen-lockfile
+cd web && bun run check
+cd web && bun run build
+cd web && bun run test:e2e:install
+cd web && bun run test:e2e
 ```
 
 ## Initialize A Store
@@ -131,3 +136,21 @@ These numbers estimate the retained duplicate data created by the scan.
 - Projections are maintained while events are appended; a full projection rebuild command is not implemented yet.
 - Archive traversal is not implemented.
 - Non-JPEG media is not implemented.
+
+## Serve The MVP Web UI
+
+Start the local web interface:
+
+```sh
+go run ./cmd/photostore serve --store ./photostore-data
+```
+
+Then open `http://127.0.0.1:8080`. The server binds to loopback by default and
+refuses public addresses unless `--allow-public-bind` is passed explicitly.
+
+For frontend development:
+
+```sh
+go run ./cmd/photostore serve --store ./photostore-data --addr 127.0.0.1:8080 --api-only
+cd web && bun run dev
+```

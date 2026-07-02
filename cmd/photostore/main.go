@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"strings"
 
@@ -158,13 +160,33 @@ func run(args []string) error {
 		}
 		defer st.Close()
 		return printReport(st, *scanID)
+	case "serve":
+		fs := flag.NewFlagSet("serve", flag.ExitOnError)
+		storePath := fs.String("store", "./photostore-data", "store path")
+		addr := fs.String("addr", "127.0.0.1:8080", "listen address")
+		apiOnly := fs.Bool("api-only", false, "serve only API routes")
+		allowPublicBind := fs.Bool("allow-public-bind", false, "allow binding to non-loopback addresses")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if !*allowPublicBind && !isLoopbackAddr(*addr) {
+			return fmt.Errorf("refusing to bind %s; use --allow-public-bind to serve beyond loopback", *addr)
+		}
+		st, err := photostore.Open(*storePath)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		srv := photostore.NewServer(st, photostore.ServerOptions{APIOnly: *apiOnly})
+		fmt.Fprintf(os.Stderr, "photostore serving http://%s\n", *addr)
+		return http.ListenAndServe(*addr, srv)
 	default:
 		return usage()
 	}
 }
 
 func usage() error {
-	return fmt.Errorf("usage: photostore init|source add|inventory acquire|inventory scan|scan|report")
+	return fmt.Errorf("usage: photostore init|source add|inventory acquire|inventory scan|scan|report|serve")
 }
 
 func progress(verbose bool) photostore.ProgressFunc {
@@ -209,4 +231,16 @@ func splitCSV(v string) []string {
 		}
 	}
 	return out
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
