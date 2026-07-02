@@ -25,7 +25,7 @@ func TestScanSourcesAcquiresOnlyJPEGs(t *testing.T) {
 	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
 		t.Fatal(err)
 	}
-	scanID, err := st.ScanSources()
+	scanID, err := st.ScanSources(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestHistoricalInventoryScanSkipsAlreadySeenHash(t *testing.T) {
 	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ScanSources(); err != nil {
+	if _, err := st.ScanSources(nil); err != nil {
 		t.Fatal(err)
 	}
 	invID, err := st.AcquireInventory(tocPath, "inventory", "test")
@@ -103,6 +103,38 @@ func TestHistoricalInventoryScanSkipsAlreadySeenHash(t *testing.T) {
 	}
 	if links != 1 {
 		t.Fatalf("historical links = %d, want 1", links)
+	}
+}
+
+func TestScanSourcesReportsDuplicateGarbage(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), []byte("same"))
+	mustWrite(t, filepath.Join(sourcePath, "B.jpeg"), []byte("same"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	scanID, err := st.ScanSources(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := st.Report(scanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DuplicateAcquisitions != 1 {
+		t.Fatalf("duplicate acquisitions = %d, want 1", report.DuplicateAcquisitions)
+	}
+	if report.DuplicateGarbageBytes != int64(len("same")) {
+		t.Fatalf("duplicate garbage bytes = %d, want %d", report.DuplicateGarbageBytes, len("same"))
 	}
 }
 

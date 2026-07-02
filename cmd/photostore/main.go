@@ -94,6 +94,7 @@ func run(args []string) error {
 			invType := fs.String("type", "toc", "inventory type")
 			resolverRoot := fs.String("resolver-root", "", "resolver root")
 			strip := fs.String("strip-prefixes", "./", "comma-separated prefixes to strip")
+			verbose := fs.Bool("verbose", false, "print progress and final report")
 			var exts repeated
 			fs.Var(&exts, "ext", "extension to ingest")
 			if err := fs.Parse(args[2:]); err != nil {
@@ -107,11 +108,14 @@ func run(args []string) error {
 				return err
 			}
 			defer st.Close()
-			scanID, err := st.ScanInventory(*inventory, *invType, exts, *resolverRoot, splitCSV(*strip), true)
+			scanID, err := st.ScanInventoryWithProgress(*inventory, *invType, exts, *resolverRoot, splitCSV(*strip), true, progress(*verbose))
 			if err != nil {
 				return err
 			}
 			fmt.Println(scanID)
+			if *verbose {
+				return printReport(st, scanID)
+			}
 			return nil
 		default:
 			return usage()
@@ -120,6 +124,7 @@ func run(args []string) error {
 		fs := flag.NewFlagSet("scan", flag.ExitOnError)
 		storePath := fs.String("store", "./photostore-data", "store path")
 		_ = fs.Int("workers", 0, "accepted for compatibility; acquisition is currently serialized")
+		verbose := fs.Bool("verbose", false, "print progress and final report")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -128,11 +133,14 @@ func run(args []string) error {
 			return err
 		}
 		defer st.Close()
-		scanID, err := st.ScanSources()
+		scanID, err := st.ScanSources(progress(*verbose))
 		if err != nil {
 			return err
 		}
 		fmt.Println(scanID)
+		if *verbose {
+			return printReport(st, scanID)
+		}
 		return nil
 	case "report":
 		fs := flag.NewFlagSet("report", flag.ExitOnError)
@@ -149,12 +157,7 @@ func run(args []string) error {
 			return err
 		}
 		defer st.Close()
-		report, err := st.Report(*scanID)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("scan: %s\nsource files acquired: %d\nhistorical entries already seen: %d\n", report.ScanID, report.SourceFilesAcquired, report.HistoricalEntriesAlreadySeen)
-		return nil
+		return printReport(st, *scanID)
 	default:
 		return usage()
 	}
@@ -162,6 +165,28 @@ func run(args []string) error {
 
 func usage() error {
 	return fmt.Errorf("usage: photostore init|source add|inventory acquire|inventory scan|scan|report")
+}
+
+func progress(verbose bool) photostore.ProgressFunc {
+	if !verbose {
+		return nil
+	}
+	return func(message string) {
+		fmt.Fprintln(os.Stderr, message)
+	}
+}
+
+func printReport(st *photostore.Store, scanID string) error {
+	report, err := st.Report(scanID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("scan: %s\n", report.ScanID)
+	fmt.Printf("source files acquired: %d\n", report.SourceFilesAcquired)
+	fmt.Printf("duplicate acquisitions: %d\n", report.DuplicateAcquisitions)
+	fmt.Printf("duplicate garbage bytes: %d\n", report.DuplicateGarbageBytes)
+	fmt.Printf("historical entries already seen: %d\n", report.HistoricalEntriesAlreadySeen)
+	return nil
 }
 
 type repeated []string

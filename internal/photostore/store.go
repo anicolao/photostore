@@ -55,12 +55,16 @@ type ScanReport struct {
 	SourceFilesAcquired          int    `json:"source_files_acquired"`
 	SourceFileAcquireFailures    int    `json:"source_file_acquire_failures"`
 	ContentAddressesMaterialized int    `json:"content_addresses_materialized"`
+	DuplicateAcquisitions        int    `json:"duplicate_acquisitions"`
+	DuplicateGarbageBytes        int64  `json:"duplicate_garbage_bytes"`
 	NonCandidateFilesSkipped     int    `json:"non_candidate_files_skipped"`
 	HistoricalJPEGEntriesLoaded  int    `json:"historical_jpeg_entries_loaded"`
 	HistoricalEntriesAlreadySeen int    `json:"historical_entries_already_seen"`
 	HistoricalEntriesResolved    int    `json:"historical_entries_resolved"`
 	HistoricalEntriesUnresolved  int    `json:"historical_entries_unresolved"`
 }
+
+type ProgressFunc func(message string)
 
 type inventoryEntry struct {
 	ID             string
@@ -233,7 +237,7 @@ func (s *Store) AcquireInventory(path, label, group string) (string, error) {
 	return invID, nil
 }
 
-func (s *Store) ScanSources() (string, error) {
+func (s *Store) ScanSources(progress ProgressFunc) (string, error) {
 	scanID := newID("scan")
 	roots, err := s.sourceRoots()
 	if err != nil {
@@ -265,6 +269,7 @@ func (s *Store) ScanSources() (string, error) {
 	}
 	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
 	for _, root := range roots {
+		progressf(progress, "scanning source root %s (%s)", root.Label, root.Path)
 		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil
@@ -282,6 +287,7 @@ func (s *Store) ScanSources() (string, error) {
 				return nil
 			}
 			report.CandidateFilesSeen++
+			progressf(progress, "acquiring %s", path)
 			rel, _ := filepath.Rel(root.Path, path)
 			entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
 				"scan_id":                 scanID,
@@ -325,6 +331,8 @@ func (s *Store) ScanSources() (string, error) {
 			"source_files_acquired":          report.SourceFilesAcquired,
 			"source_file_acquire_failures":   report.SourceFileAcquireFailures,
 			"content_addresses_materialized": report.ContentAddressesMaterialized,
+			"duplicate_acquisitions":         report.DuplicateAcquisitions,
+			"duplicate_garbage_bytes":        report.DuplicateGarbageBytes,
 			"non_candidate_files_skipped":    report.NonCandidateFilesSkipped,
 		},
 		"report_paths": map[string]any{
@@ -338,6 +346,10 @@ func (s *Store) ScanSources() (string, error) {
 }
 
 func (s *Store) ScanInventory(invID, invType string, exts []string, resolverRoot string, stripPrefixes []string, caseSensitive bool) (string, error) {
+	return s.ScanInventoryWithProgress(invID, invType, exts, resolverRoot, stripPrefixes, caseSensitive, nil)
+}
+
+func (s *Store) ScanInventoryWithProgress(invID, invType string, exts []string, resolverRoot string, stripPrefixes []string, caseSensitive bool, progress ProgressFunc) (string, error) {
 	scanID := newID("scan")
 	inv, err := s.inventory(invID)
 	if err != nil {
@@ -383,6 +395,7 @@ func (s *Store) ScanInventory(invID, invType string, exts []string, resolverRoot
 		return "", err
 	}
 	report := &ScanReport{ScanID: scanID, HistoricalJPEGEntriesLoaded: len(entries)}
+	progressf(progress, "loaded %d matching historical inventory entries", len(entries))
 	for _, ent := range entries {
 		ent.ResolvedPath = resolveHistoricalPath(resolverRoot, ent.HistoricalPath, stripPrefixes)
 		if err := s.upsertInventoryEntry(scanID, inv.ID, ent); err != nil {
@@ -394,6 +407,7 @@ func (s *Store) ScanInventory(invID, invType string, exts []string, resolverRoot
 		}
 		if seen {
 			report.HistoricalEntriesAlreadySeen++
+			progressf(progress, "skipping already-seen historical entry %s", ent.ID)
 			if err := s.appendEvent("HistoricalInventoryOccurrenceLinked", nil, &scanID, map[string]any{
 				"scan_id":                 scanID,
 				"source_occurrence_id":    newID("occ"),
@@ -422,6 +436,7 @@ func (s *Store) ScanInventory(invID, invType string, exts []string, resolverRoot
 			continue
 		}
 		report.HistoricalEntriesResolved++
+		progressf(progress, "acquiring historical entry %s from %s", ent.ID, ent.ResolvedPath)
 		entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
 			"scan_id":                 scanID,
 			"source_root_id":          nil,
@@ -628,6 +643,10 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 		return err
 	}
 	report.SourceFilesAcquired++
+	if existed {
+		report.DuplicateAcquisitions++
+		report.DuplicateGarbageBytes += result.Size
+	}
 	if !existed {
 		if err := s.materialize(objID, filepath.ToSlash(key), ref); err != nil {
 			return err
@@ -743,6 +762,8 @@ func (s *Store) writeReport(report *ScanReport) error {
 		"scan: " + report.ScanID,
 		fmt.Sprintf("candidate files: %d", report.CandidateFilesSeen),
 		fmt.Sprintf("source files acquired: %d", report.SourceFilesAcquired),
+		fmt.Sprintf("duplicate acquisitions: %d", report.DuplicateAcquisitions),
+		fmt.Sprintf("duplicate garbage bytes: %d", report.DuplicateGarbageBytes),
 		fmt.Sprintf("historical entries loaded: %d", report.HistoricalJPEGEntriesLoaded),
 		fmt.Sprintf("historical entries already seen: %d", report.HistoricalEntriesAlreadySeen),
 	}
@@ -940,6 +961,12 @@ func errPayload(err error, retryable bool) map[string]any {
 		"type":      "io_error",
 		"message":   err.Error(),
 		"retryable": retryable,
+	}
+}
+
+func progressf(progress ProgressFunc, format string, args ...any) {
+	if progress != nil {
+		progress(fmt.Sprintf(format, args...))
 	}
 }
 
