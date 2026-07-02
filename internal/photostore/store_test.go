@@ -166,6 +166,9 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 		t.Fatalf("retained duplicate bytes before dedup = %d, want %d", before.RetainedDuplicateBytes, len(content))
 	}
 	duplicatePath := retainedDuplicatePath(t, st)
+	canonicalPath := retainedDuplicateCanonicalPath(t, st)
+	assertFileMode(t, duplicatePath, 0o600)
+	assertFileMode(t, canonicalPath, 0o600)
 	summary, err := st.VerifyAndDeduplicate(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +190,9 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	if string(got) != string(content) {
 		t.Fatalf("deduplicated object bytes = %q, want %q", got, content)
 	}
+	assertSameFile(t, duplicatePath, canonicalPath)
+	assertFileMode(t, duplicatePath, 0o600)
+	assertFileMode(t, canonicalPath, 0o600)
 	var retained int
 	if err := st.DB.QueryRow(`select count(*) from source_content_links where acquired_object_retained = 1 and cas_existed_at_ingest = 1`).Scan(&retained); err != nil {
 		t.Fatal(err)
@@ -230,6 +236,45 @@ func retainedDuplicatePath(t *testing.T, st *Store) string {
 		t.Fatal(err)
 	}
 	return filepath.Join(st.Root, filepath.FromSlash(key))
+}
+
+func retainedDuplicateCanonicalPath(t *testing.T, st *Store) string {
+	t.Helper()
+	var ref string
+	if err := st.DB.QueryRow(`
+		select scl.content_ref
+		from source_content_links scl
+		where scl.cas_existed_at_ingest = 1 and scl.acquired_object_retained = 1
+		limit 1`).Scan(&ref); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(st.Root, filepath.FromSlash(casKey(ref)))
+}
+
+func assertSameFile(t *testing.T, left, right string) {
+	t.Helper()
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(leftInfo, rightInfo) {
+		t.Fatalf("%s and %s are not the same hard-linked file", left, right)
+	}
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
 }
 
 func mustMkdir(t *testing.T, path string) {
