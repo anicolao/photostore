@@ -53,6 +53,24 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     ]
   });
 
+  await page.reload();
+  await tester.step('completed-job-restored-after-reload', {
+    description: 'Reloading the dashboard restores the latest completed job status and thumbnail summary.',
+    verifications: [
+      { spec: 'Completed job status is restored', check: async () => await expect(page.getByTestId('job-status')).toContainText('completed') },
+      { spec: 'Thumbnail summary remains visible', check: async () => await expect(page.getByTestId('job-latest-progress')).toContainText('thumbnails generated') }
+    ]
+  });
+
+  await page.getByTestId('scan-table').getByRole('button', { name: 'Status' }).click();
+  await tester.step('scan-status-selected-from-table', {
+    description: 'A scan row can restore its job status into the status panel.',
+    verifications: [
+      { spec: 'Selected scan status is visible', check: async () => await expect(page.getByTestId('job-status')).toContainText('completed') },
+      { spec: 'Selected scan thumbnail summary is visible', check: async () => await expect(page.getByTestId('job-latest-progress')).toContainText('thumbnails generated') }
+    ]
+  });
+
   await page.getByTestId('toggle-job-log').click();
   await tester.step('job-log-opened', {
     description: 'Opening the job log reveals the scrollable acquisition log.',

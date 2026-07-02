@@ -38,9 +38,29 @@ Register a source root, scan it, inspect the compact progress log, and drill int
 
 ---
 
+## Reloading the dashboard restores the latest completed job status and thumbnail summary.
+
+![Reloading the dashboard restores the latest completed job status and thumbnail summary.](./screenshots/003-completed-job-restored-after-reload.png)
+
+**Verifications:**
+- [x] Completed job status is restored
+- [x] Thumbnail summary remains visible
+
+---
+
+## A scan row can restore its job status into the status panel.
+
+![A scan row can restore its job status into the status panel.](./screenshots/004-scan-status-selected-from-table.png)
+
+**Verifications:**
+- [x] Selected scan status is visible
+- [x] Selected scan thumbnail summary is visible
+
+---
+
 ## Opening the job log reveals the scrollable acquisition log.
 
-![Opening the job log reveals the scrollable acquisition log.](./screenshots/003-job-log-opened.png)
+![Opening the job log reveals the scrollable acquisition log.](./screenshots/005-job-log-opened.png)
 
 **Verifications:**
 - [x] Job log contains acquisition messages
@@ -50,7 +70,7 @@ Register a source root, scan it, inspect the compact progress log, and drill int
 
 ## The acquired count opens a thumbnail grid with image links.
 
-![The acquired count opens a thumbnail grid with image links.](./screenshots/004-acquired-files-drilldown.png)
+![The acquired count opens a thumbnail grid with image links.](./screenshots/006-acquired-files-drilldown.png)
 
 **Verifications:**
 - [x] Photos heading is visible

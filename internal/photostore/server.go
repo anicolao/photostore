@@ -1,14 +1,21 @@
 package photostore
 
 import (
+	"bufio"
+	"crypto/sha1"
 	"embed"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +35,8 @@ type Server struct {
 	mu      sync.Mutex
 	jobsMu  sync.Mutex
 	jobs    map[string]*Job
+	subsMu  sync.Mutex
+	subs    map[chan ServerEvent]struct{}
 }
 
 type Job struct {
@@ -41,12 +50,20 @@ type Job struct {
 	Progress     []string `json:"progress"`
 }
 
+type ServerEvent struct {
+	Type         string `json:"type"`
+	RecordedAtMS int64  `json:"recorded_at_ms"`
+	Job          *Job   `json:"job,omitempty"`
+	Jobs         []*Job `json:"jobs,omitempty"`
+}
+
 func NewServer(store *Store, opts ServerOptions) http.Handler {
 	s := &Server{
 		store:   store,
 		apiOnly: opts.APIOnly,
 		mux:     http.NewServeMux(),
 		jobs:    map[string]*Job{},
+		subs:    map[chan ServerEvent]struct{}{},
 	}
 	s.routes()
 	return s
@@ -73,6 +90,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
+	s.mux.HandleFunc("GET /api/events/ws", s.handleEventWebSocket)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/{job_id}", s.handleJob)
 	s.mux.HandleFunc("/", s.handleStatic)
@@ -316,36 +334,42 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.jobList())
+	writeJSON(w, http.StatusOK, s.allJobs())
 }
 
 func (s *Server) startJob(kind string, work func(ProgressFunc) (string, error)) *Job {
 	job := &Job{JobID: newID("job"), Kind: kind, Status: "running", StartedAtMS: nowMS()}
 	s.jobsMu.Lock()
 	s.jobs[job.JobID] = job
+	copyJob := cloneJob(job)
 	s.jobsMu.Unlock()
+	s.broadcast(ServerEvent{Type: "job_started", Job: copyJob})
 	go func() {
 		progress := func(message string) {
 			s.jobsMu.Lock()
 			job.Progress = append(job.Progress, message)
+			copyJob := cloneJob(job)
 			s.jobsMu.Unlock()
+			s.broadcast(ServerEvent{Type: "job_progress", Job: copyJob})
 		}
 		result, err := work(progress)
 		finished := nowMS()
 		s.jobsMu.Lock()
-		defer s.jobsMu.Unlock()
 		job.FinishedAtMS = &finished
 		if err != nil {
 			msg := err.Error()
 			job.Error = &msg
 			job.Status = "failed"
-			return
+		} else {
+			job.ResultRef = &result
+			job.Status = "completed"
 		}
-		job.ResultRef = &result
-		job.Status = "completed"
+		copyJob := cloneJob(job)
+		s.jobsMu.Unlock()
+		s.broadcast(ServerEvent{Type: "job_finished", Job: copyJob})
+		s.broadcast(ServerEvent{Type: "projection_changed"})
 	}()
-	copyJob := *job
-	return &copyJob
+	return copyJob
 }
 
 func (s *Server) jobList() []*Job {
@@ -353,9 +377,7 @@ func (s *Server) jobList() []*Job {
 	defer s.jobsMu.Unlock()
 	out := make([]*Job, 0, len(s.jobs))
 	for _, job := range s.jobs {
-		copyJob := *job
-		copyJob.Progress = append([]string(nil), job.Progress...)
-		out = append(out, &copyJob)
+		out = append(out, cloneJob(job))
 	}
 	return out
 }
@@ -367,9 +389,210 @@ func (s *Server) job(id string) (*Job, bool) {
 	if !ok {
 		return nil, false
 	}
+	return cloneJob(job), true
+}
+
+func cloneJob(job *Job) *Job {
 	copyJob := *job
 	copyJob.Progress = append([]string(nil), job.Progress...)
-	return &copyJob, true
+	return &copyJob
+}
+
+func (s *Server) handleEventWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		writeErrorStatus(w, http.StatusBadRequest, errors.New("websocket upgrade is required"))
+		return
+	}
+	key := r.Header.Get("Sec-WebSocket-Key")
+	if key == "" {
+		writeErrorStatus(w, http.StatusBadRequest, errors.New("Sec-WebSocket-Key is required"))
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		writeErrorStatus(w, http.StatusInternalServerError, errors.New("websocket hijacking is unavailable"))
+		return
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if err := writeWebSocketUpgrade(rw, key); err != nil {
+		return
+	}
+	ch := s.subscribe()
+	defer s.unsubscribe(ch)
+	if err := writeWebSocketJSON(conn, ServerEvent{Type: "job_snapshot", RecordedAtMS: nowMS(), Jobs: s.allJobs()}); err != nil {
+		return
+	}
+	for event := range ch {
+		if err := writeWebSocketJSON(conn, event); err != nil {
+			return
+		}
+	}
+}
+
+func (s *Server) allJobs() []*Job {
+	jobs := s.jobList()
+	liveScans := map[string]struct{}{}
+	for _, job := range jobs {
+		if job.ResultRef != nil && *job.ResultRef != "" {
+			liveScans[*job.ResultRef] = struct{}{}
+		}
+	}
+	persisted, err := s.persistedScanJobs()
+	if err == nil {
+		for _, job := range persisted {
+			if job.ResultRef != nil {
+				if _, ok := liveScans[*job.ResultRef]; ok {
+					continue
+				}
+			}
+			jobs = append(jobs, job)
+		}
+	}
+	sort.SliceStable(jobs, func(i, j int) bool {
+		return jobs[i].StartedAtMS > jobs[j].StartedAtMS
+	})
+	return jobs
+}
+
+func (s *Server) persistedScanJobs() ([]*Job, error) {
+	scans, err := s.store.Scans(100)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Job, 0, len(scans))
+	for _, scan := range scans {
+		scanID := scan.ScanID
+		startedAt := int64(0)
+		if scan.StartedAtMS != nil {
+			startedAt = *scan.StartedAtMS
+		} else if scan.CompletedAtMS != nil {
+			startedAt = *scan.CompletedAtMS
+		}
+		status := scan.Status
+		if status == "started" {
+			status = "interrupted"
+		}
+		var finishedAt *int64
+		if scan.CompletedAtMS != nil {
+			finished := *scan.CompletedAtMS
+			finishedAt = &finished
+		}
+		progress := s.persistedScanProgress(scan)
+		out = append(out, &Job{
+			JobID:        scanJobID(scanID),
+			Kind:         "scan",
+			Status:       status,
+			StartedAtMS:  startedAt,
+			FinishedAtMS: finishedAt,
+			ResultRef:    &scanID,
+			Progress:     progress,
+		})
+	}
+	return out, nil
+}
+
+func (s *Server) persistedScanProgress(scan ScanProjection) []string {
+	progress := []string{fmt.Sprintf("scan %s: %s", scan.ScanID, scan.Status)}
+	if scan.Report != nil {
+		if scan.Report.SourceFilesAcquired != nil {
+			progress = append(progress, fmt.Sprintf("source files acquired: %d", *scan.Report.SourceFilesAcquired))
+		}
+		if scan.Report.DuplicateAcquisitions != nil {
+			progress = append(progress, fmt.Sprintf("duplicate acquisitions: %d", *scan.Report.DuplicateAcquisitions))
+		}
+		if scan.Report.DuplicateGarbageBytes != nil {
+			progress = append(progress, fmt.Sprintf("duplicate garbage bytes: %d", *scan.Report.DuplicateGarbageBytes))
+		}
+	}
+	if summary, err := s.store.ThumbnailReport(scan.ScanID); err == nil {
+		for _, issue := range summary.Issues {
+			progress = append(progress, fmt.Sprintf("thumbnail unavailable for %s (%s; object %s): %s", issue.Filename, issue.Source, issue.StoredObjectID, issue.Error))
+		}
+		progress = append(progress, fmt.Sprintf("thumbnails generated: %d, already present: %d, unavailable: %d", summary.Generated, summary.Existing, summary.Failed))
+		return progress
+	}
+	if scan.Status == "completed" {
+		progress = append(progress, fmt.Sprintf("thumbnail report missing for scan %s", scan.ScanID))
+	}
+	return progress
+}
+
+func scanJobID(scanID string) string {
+	return "scan_job_" + scanID
+}
+
+func (s *Server) subscribe() chan ServerEvent {
+	ch := make(chan ServerEvent, 128)
+	s.subsMu.Lock()
+	s.subs[ch] = struct{}{}
+	s.subsMu.Unlock()
+	return ch
+}
+
+func (s *Server) unsubscribe(ch chan ServerEvent) {
+	s.subsMu.Lock()
+	delete(s.subs, ch)
+	s.subsMu.Unlock()
+	close(ch)
+}
+
+func (s *Server) broadcast(event ServerEvent) {
+	if event.RecordedAtMS == 0 {
+		event.RecordedAtMS = nowMS()
+	}
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for ch := range s.subs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+func writeWebSocketUpgrade(rw *bufio.ReadWriter, key string) error {
+	_, err := fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", webSocketAccept(key))
+	if err != nil {
+		return err
+	}
+	return rw.Flush()
+}
+
+func webSocketAccept(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func writeWebSocketJSON(conn net.Conn, event ServerEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	return writeWebSocketText(conn, payload)
+}
+
+func writeWebSocketText(w io.Writer, payload []byte) error {
+	header := []byte{0x81}
+	switch n := len(payload); {
+	case n <= 125:
+		header = append(header, byte(n))
+	case n <= 65535:
+		header = append(header, 126, byte(n>>8), byte(n))
+	default:
+		header = append(header, 127)
+		var size [8]byte
+		binary.BigEndian.PutUint64(size[:], uint64(n))
+		header = append(header, size[:]...)
+	}
+	if _, err := w.Write(header); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
