@@ -44,6 +44,8 @@ Metadata events are content facts for a specific extractor version. If a scan se
 
 When the extractor changes meaningfully, such as adding location fields for location-based indexing, the extractor version changes. The same content may then receive a new `PhotoMetadataExtracted` event for the new extractor version.
 
+Timestamp parsing rules are reducer logic, not extractor logic. If parsing is improved, projections should be rebuilt from existing `PhotoMetadataExtracted` events instead of re-emitting metadata events.
+
 ## Metadata Sources
 
 For the first version, supported capture-time sources are JPEG EXIF fields only:
@@ -54,7 +56,7 @@ For the first version, supported capture-time sources are JPEG EXIF fields only:
 - `CreateDate`, as a separate extracted field, not as a fallback
 - `ModifyDate`, as a separate extracted field, not as a fallback
 
-The extractor should preserve raw source values and parse results separately. A malformed EXIF field is still useful evidence and should be visible in diagnostics.
+The extractor should preserve durable raw source values. Reducers parse those raw values into capture-time projections. A malformed EXIF field is still useful evidence and should be visible in diagnostics because a future reducer version may interpret it differently.
 
 The extractor must not use:
 
@@ -94,27 +96,19 @@ Payload:
   "extracted_at_ms": 1782931320456,
   "fields": {
     "datetime_original": {
-      "raw": "2012:07:04 18:22:11",
-      "parsed_local": "2012-07-04T18:22:11",
-      "parse_status": "ok"
+      "raw": "2012:07:04 18:22:11"
     },
     "offset_time_original": {
-      "raw": "-04:00",
-      "parse_status": "ok"
+      "raw": "-04:00"
     },
     "subsec_time_original": {
-      "raw": "42",
-      "parse_status": "ok"
+      "raw": "42"
     },
     "create_date": {
-      "raw": "2012:07:04 18:22:11",
-      "parsed_local": "2012-07-04T18:22:11",
-      "parse_status": "ok"
+      "raw": "2012:07:04 18:22:11"
     },
     "modify_date": {
-      "raw": "2014:01:12 09:03:02",
-      "parsed_local": "2014-01-12T09:03:02",
-      "parse_status": "ok"
+      "raw": "2014:01:12 09:03:02"
     }
   },
   "warnings": []
@@ -248,7 +242,7 @@ The reducer computes effective capture time for each stored photo.
 Selection order:
 
 1. Latest non-cleared `CaptureTimeCorrected` for the target.
-2. Latest successful `PhotoMetadataExtracted` from the active extractor version where `DateTimeOriginal` parsed successfully.
+2. Latest successful `PhotoMetadataExtracted` from the active extractor version whose raw `DateTimeOriginal` the active capture-time reducer version parses successfully.
 3. No effective capture time.
 
 `CreateDate`, `ModifyDate`, filesystem timestamps, paths, filenames, and ingestion times are not fallback capture-time sources.
@@ -266,6 +260,8 @@ source_kind              # user_correction | exif_datetime_original | none
 source_event_id
 extractor_name
 extractor_version
+reducer_name
+reducer_version
 raw_value
 parse_status
 ```
@@ -294,6 +290,8 @@ photo_capture_times(
   source_event_id,
   extractor_name,
   extractor_version,
+  reducer_name,
+  reducer_version,
   raw_value
 )
 
@@ -306,6 +304,14 @@ content_metadata(
   fields_json,
   warnings_json,
   primary key(content_ref, extractor_name, extractor_version)
+)
+
+capture_time_reducer_runs(
+  reducer_name,
+  reducer_version,
+  extractor_name,
+  extractor_version,
+  reduced_at_ms
 )
 
 metadata_issues(
@@ -438,12 +444,11 @@ The scanner must use the Photostore-owned acquired object for extraction, not th
 
 ## Extractor Version Workflow
 
-When metadata semantics change, create a new extractor version. Examples:
+When the durable extracted artifact changes, create a new extractor version. Examples:
 
 - Adding GPS/location fields.
-- Changing timestamp parsing rules.
-- Fixing EXIF offset parsing.
 - Recording additional raw fields needed by a new projection.
+- Changing how EXIF tags are located or decoded from JPEG bytes.
 
 For a new extractor version, already stored content needs an explicit command:
 
@@ -461,6 +466,17 @@ The command should:
 - Produce a metadata extraction report.
 
 This is not a fallback. It is an explicit command for applying a new extractor version to existing Photostore-owned content.
+
+## Reducer Version Workflow
+
+When timestamp interpretation changes, create a new reducer version and rebuild projections from existing metadata events. Examples:
+
+- Changing timestamp parsing rules.
+- Fixing EXIF offset parsing.
+- Changing how missing offsets are represented in local calendar buckets.
+- Changing precision handling for subsecond fields.
+
+These changes should not emit new `PhotoMetadataExtracted` events because the durable extracted artifact has not changed. They should update reducer metadata in projections, such as `reducer_name`, `reducer_version`, and `parse_status`.
 
 ## Open Questions
 
