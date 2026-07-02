@@ -12,6 +12,7 @@
   let sourceLabel = '';
   let error = '';
   let loading = true;
+  let jobLogOpen = false;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   async function refresh(showLoading = false) {
@@ -51,6 +52,7 @@
 
   async function runScan(start: () => Promise<Job>) {
     error = '';
+    jobLogOpen = false;
     try {
       activeJob = await start();
       while (activeJob.status === 'running') {
@@ -107,6 +109,10 @@
       dateStyle: 'medium',
       timeStyle: 'short'
     }).format(new Date(value));
+  }
+
+  function latestProgress(job: Job) {
+    return job.progress.at(-1) ?? 'Waiting for progress...';
   }
 
   onMount(() => {
@@ -197,15 +203,25 @@
     </section>
 
     <section aria-labelledby="job-heading">
-      <h2 id="job-heading">Active job</h2>
+      <div class="section-heading">
+        <h2 id="job-heading">Active job</h2>
+        {#if activeJob && activeJob.progress.length > 0}
+          <button data-testid="toggle-job-log" on:click={() => (jobLogOpen = !jobLogOpen)}>
+            {jobLogOpen ? 'Close log' : 'Open log'}
+          </button>
+        {/if}
+      </div>
       {#if activeJob}
         <p data-testid="job-status">{activeJob.kind}: {activeJob.status}</p>
+        <p class="progress-current" data-testid="job-latest-progress">{latestProgress(activeJob)}</p>
         {#if activeJob.error}<p class="error">{activeJob.error}</p>{/if}
-        <ul class="rows">
-          {#each activeJob.progress as message}
-            <li>{message}</li>
-          {/each}
-        </ul>
+        {#if jobLogOpen}
+          <div class="job-log" data-testid="job-log" role="log" aria-label="Job progress log">
+            {#each activeJob.progress as message}
+              <div>{message}</div>
+            {/each}
+          </div>
+        {/if}
       {:else}
         <p class="empty" data-testid="job-empty">No job running.</p>
       {/if}
@@ -372,6 +388,32 @@
   .error {
     border-color: #d93025;
     color: #a50e0e;
+  }
+
+  .progress-current {
+    margin: 8px 0 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #3c4043;
+  }
+
+  .job-log {
+    max-height: 240px;
+    margin-top: 12px;
+    overflow: auto;
+    border: 1px solid #d9dee7;
+    border-radius: 6px;
+    background: #111827;
+    color: #e5e7eb;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    padding: 10px;
+  }
+
+  .job-log div + div {
+    margin-top: 4px;
   }
 
   table {
