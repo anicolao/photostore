@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,17 @@ func TestHistoricalInventoryScanSkipsAlreadySeenHash(t *testing.T) {
 	}
 	if links != 1 {
 		t.Fatalf("historical links = %d, want 1", links)
+	}
+}
+
+func TestOpenUninitializedStoreReturnsActionableError(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing-store")
+	_, err := Open(root)
+	if err == nil {
+		t.Fatal("Open succeeded for an uninitialized store")
+	}
+	if got := err.Error(); !strings.Contains(got, "photostore init --store") {
+		t.Fatalf("error = %q, want init guidance", got)
 	}
 }
 
