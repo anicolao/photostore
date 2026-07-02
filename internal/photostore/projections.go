@@ -68,6 +68,7 @@ type AcquiredFileProjection struct {
 	ScanID             string `json:"scan_id"`
 	ContentRef         string `json:"content_ref"`
 	ViewURL            string `json:"view_url"`
+	BytesURL           string `json:"bytes_url"`
 	ThumbnailURL       string `json:"thumbnail_url"`
 }
 
@@ -93,7 +94,17 @@ type DatedPhotoProjection struct {
 	UTCOffset        string `json:"utc_offset,omitempty"`
 	Precision        string `json:"precision,omitempty"`
 	ViewURL          string `json:"view_url"`
+	BytesURL         string `json:"bytes_url"`
 	ThumbnailURL     string `json:"thumbnail_url"`
+}
+
+type ObjectMetadataProjection struct {
+	StoredObjectID   string                       `json:"stored_object_id"`
+	ContentRef       string                       `json:"content_ref"`
+	ExtractorName    string                       `json:"extractor_name"`
+	ExtractorVersion int64                        `json:"extractor_version"`
+	MetadataEventID  string                       `json:"metadata_event_id"`
+	Fields           map[string]map[string]string `json:"fields"`
 }
 
 type DatedPhotoResponse struct {
@@ -327,7 +338,8 @@ func (s *Store) AcquiredFiles(scanID string) ([]AcquiredFileProjection, error) {
 		if file.Filename == "." || file.Filename == string(filepath.Separator) || file.Filename == "" {
 			file.Filename = filepath.Base(file.Path)
 		}
-		file.ViewURL = "/api/objects/" + file.StoredObjectID + "/bytes"
+		file.ViewURL = "/objects/" + file.StoredObjectID
+		file.BytesURL = "/api/objects/" + file.StoredObjectID + "/bytes"
 		file.ThumbnailURL = "/api/objects/" + file.StoredObjectID + "/thumbnail"
 		out = append(out, file)
 	}
@@ -381,7 +393,8 @@ func (s *Store) UndatedPhotos() (DatedPhotoResponse, error) {
 			return DatedPhotoResponse{}, err
 		}
 		photo.Filename = filenameForProjection(photo.RelativePath, path)
-		photo.ViewURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
+		photo.ViewURL = "/objects/" + photo.StoredObjectID
+		photo.BytesURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
 		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
 		photos = append(photos, photo)
 	}
@@ -439,7 +452,8 @@ func (s *Store) photosForCaptureDate(captureDate string) ([]DatedPhotoProjection
 		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.Filename, &photo.RelativePath, &photo.CaptureDate, &photo.CaptureTimeLocal, &photo.UTCOffset, &photo.Precision); err != nil {
 			return nil, err
 		}
-		photo.ViewURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
+		photo.ViewURL = "/objects/" + photo.StoredObjectID
+		photo.BytesURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
 		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
 		photos = append(photos, photo)
 	}
@@ -466,6 +480,30 @@ func filenameForProjection(relativePath, path string) string {
 		filename = filepath.Base(path)
 	}
 	return filename
+}
+
+func (s *Store) ObjectMetadata(storedObjectID string) (ObjectMetadataProjection, error) {
+	var contentRef string
+	err := s.DB.QueryRow(`select content_ref from source_content_links where stored_object_id = ? order by source_occurrence_id limit 1`, storedObjectID).Scan(&contentRef)
+	if err != nil {
+		return ObjectMetadataProjection{}, err
+	}
+	var out ObjectMetadataProjection
+	var fieldsJSON string
+	out.StoredObjectID = storedObjectID
+	err = s.DB.QueryRow(`
+		select content_ref, extractor_name, extractor_version, metadata_event_id, fields_json
+		from content_metadata
+		where content_ref = ? and extractor_name = ? and extractor_version = ?`,
+		contentRef, metadataExtractorName, metadataExtractorVersion,
+	).Scan(&out.ContentRef, &out.ExtractorName, &out.ExtractorVersion, &out.MetadataEventID, &fieldsJSON)
+	if err != nil {
+		return ObjectMetadataProjection{}, err
+	}
+	if err := json.Unmarshal([]byte(fieldsJSON), &out.Fields); err != nil {
+		return ObjectMetadataProjection{}, err
+	}
+	return out, nil
 }
 
 type StoredObjectFile struct {

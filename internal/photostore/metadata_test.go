@@ -15,6 +15,9 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	sourcePath := filepath.Join(root, "source")
 	mustMkdir(t, sourcePath)
 	jpegBytes := jpegWithEXIF(t, map[uint16]string{
+		0x010f: "Canon",
+		0x0110: "EOS 5D",
+		0x1234: "custom value",
 		0x9003: "2012:07:04 18:22:11",
 		0x9011: "-04:00",
 	})
@@ -57,6 +60,15 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	}
 	if got := fields["datetime_original"]["raw"]; got != "2012:07:04 18:22:11" {
 		t.Fatalf("datetime_original raw = %q, want EXIF value", got)
+	}
+	if got := fields["make"]["raw"]; got != "Canon" {
+		t.Fatalf("make raw = %q, want camera make", got)
+	}
+	if got := fields["model"]["raw"]; got != "EOS 5D" {
+		t.Fatalf("model raw = %q, want camera model", got)
+	}
+	if got := fields["exif_tag_1234"]["raw"]; got != "custom value" {
+		t.Fatalf("unknown EXIF tag raw = %q, want retained value", got)
 	}
 	if strings.Contains(fieldsJSON, "parsed") {
 		t.Fatalf("metadata event contains parsed reducer data: %s", fieldsJSON)

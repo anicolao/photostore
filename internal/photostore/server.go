@@ -3,6 +3,7 @@ package photostore
 import (
 	"bufio"
 	"crypto/sha1"
+	"database/sql"
 	"embed"
 	"encoding/base64"
 	"encoding/binary"
@@ -86,6 +87,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/acquired", s.handleScanAcquiredFiles)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/thumbnail", s.handleStoredObjectThumbnail)
+	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/metadata", s.handleStoredObjectMetadata)
 	s.mux.HandleFunc("GET /api/photos/dates", s.handlePhotoYears)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}", s.handlePhotoMonths)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}", s.handlePhotoDays)
@@ -305,6 +307,19 @@ func (s *Server) handleStoredObjectThumbnail(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Content-Disposition", "inline")
 	http.ServeFile(w, r, path)
+}
+
+func (s *Server) handleStoredObjectMetadata(w http.ResponseWriter, r *http.Request) {
+	metadata, err := s.store.ObjectMetadata(r.PathValue("stored_object_id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, metadata)
 }
 
 func (s *Server) handleInventories(w http.ResponseWriter, r *http.Request) {

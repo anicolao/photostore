@@ -11,10 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 )
 
 const metadataExtractorName = "photostore-exif"
-const metadataExtractorVersion = 1
+const metadataExtractorVersion = 2
 
 type MetadataRefreshSummary struct {
 	RequestID string `json:"request_id"`
@@ -313,19 +314,33 @@ func exifRawFields(payload []byte) (map[string]map[string]string, error) {
 	}
 	fields := map[string]map[string]string{}
 	ifd0 := int(order.Uint32(tiff[4:8]))
-	exifIFD := 0
-	if err := readEXIFIFD(tiff, order, ifd0, fields, &exifIFD); err != nil {
+	pointers := map[uint16]int{}
+	if err := readEXIFIFD(tiff, order, ifd0, "ifd0", fields, pointers); err != nil {
 		return nil, err
 	}
-	if exifIFD > 0 {
-		if err := readEXIFIFD(tiff, order, exifIFD, fields, nil); err != nil {
+	for _, pointer := range []struct {
+		tag uint16
+		ifd string
+	}{
+		{tag: 0x8769, ifd: "exif"},
+		{tag: 0x8825, ifd: "gps"},
+	} {
+		offset := pointers[pointer.tag]
+		if offset > 0 {
+			if err := readEXIFIFD(tiff, order, offset, pointer.ifd, fields, nil); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if offset := pointers[0xa005]; offset > 0 {
+		if err := readEXIFIFD(tiff, order, offset, "interop", fields, nil); err != nil {
 			return nil, err
 		}
 	}
 	return fields, nil
 }
 
-func readEXIFIFD(tiff []byte, order binary.ByteOrder, offset int, fields map[string]map[string]string, exifIFD *int) error {
+func readEXIFIFD(tiff []byte, order binary.ByteOrder, offset int, ifdName string, fields map[string]map[string]string, pointers map[uint16]int) error {
 	if offset < 8 || offset+2 > len(tiff) {
 		return errors.New("invalid EXIF IFD offset")
 	}
@@ -339,49 +354,195 @@ func readEXIFIFD(tiff []byte, order binary.ByteOrder, offset int, fields map[str
 		tag := order.Uint16(entry[0:2])
 		typ := order.Uint16(entry[2:4])
 		count := order.Uint32(entry[4:8])
-		if tag == 0x8769 && typ == 4 && count == 1 && exifIFD != nil {
-			*exifIFD = int(order.Uint32(entry[8:12]))
+		if exifPointerTag(tag) && typ == 4 && count == 1 && pointers != nil {
+			pointers[tag] = int(order.Uint32(entry[8:12]))
 		}
-		if name := exifFieldName(tag); name != "" {
-			if raw, ok := exifASCIIValue(tiff, order, entry, typ, count); ok {
-				fields[name] = map[string]string{"raw": raw}
-			}
+		name := exifFieldName(ifdName, tag)
+		field := map[string]string{
+			"tag":   fmt.Sprintf("0x%04x", tag),
+			"ifd":   ifdName,
+			"type":  exifTypeName(typ),
+			"count": fmt.Sprint(count),
 		}
+		if raw, ok := exifFieldValue(tiff, order, entry, typ, count); ok {
+			field["raw"] = raw
+		}
+		fields[name] = field
 		pos += 12
 	}
 	return nil
 }
 
-func exifFieldName(tag uint16) string {
+func exifPointerTag(tag uint16) bool {
+	return tag == 0x8769 || tag == 0x8825 || tag == 0xa005
+}
+
+func exifFieldName(ifdName string, tag uint16) string {
+	if name := knownEXIFFieldName(ifdName, tag); name != "" {
+		return name
+	}
+	return fmt.Sprintf("%s_tag_%04x", ifdName, tag)
+}
+
+func knownEXIFFieldName(ifdName string, tag uint16) string {
 	switch tag {
+	case 0x010f:
+		return "make"
+	case 0x0110:
+		return "model"
+	case 0x0112:
+		return "orientation"
 	case 0x0132:
 		return "modify_date"
+	case 0x829a:
+		return "exposure_time"
+	case 0x829d:
+		return "f_number"
+	case 0x8827:
+		return "iso_speed_ratings"
+	case 0x882a:
+		return "time_zone_offset"
+	case 0x9000:
+		return "exif_version"
 	case 0x9003:
 		return "datetime_original"
 	case 0x9004:
 		return "create_date"
+	case 0x9201:
+		return "shutter_speed_value"
+	case 0x9202:
+		return "aperture_value"
+	case 0x9204:
+		return "exposure_bias_value"
+	case 0x9209:
+		return "flash"
+	case 0x920a:
+		return "focal_length"
 	case 0x9011:
 		return "offset_time_original"
 	case 0x9291:
 		return "subsec_time_original"
+	case 0xa002:
+		return "pixel_x_dimension"
+	case 0xa003:
+		return "pixel_y_dimension"
+	case 0xa405:
+		return "focal_length_in_35mm_film"
+	case 0xa406:
+		return "scene_capture_type"
 	default:
 		return ""
 	}
 }
 
-func exifASCIIValue(tiff []byte, order binary.ByteOrder, entry []byte, typ uint16, count uint32) (string, bool) {
-	if typ != 2 || count == 0 {
+func exifTypeName(typ uint16) string {
+	switch typ {
+	case 1:
+		return "byte"
+	case 2:
+		return "ascii"
+	case 3:
+		return "short"
+	case 4:
+		return "long"
+	case 5:
+		return "rational"
+	case 7:
+		return "undefined"
+	case 9:
+		return "slong"
+	case 10:
+		return "srational"
+	default:
+		return fmt.Sprintf("type_%d", typ)
+	}
+}
+
+func exifFieldValue(tiff []byte, order binary.ByteOrder, entry []byte, typ uint16, count uint32) (string, bool) {
+	if count == 0 {
 		return "", false
 	}
-	var raw []byte
-	if count <= 4 {
-		raw = entry[8 : 8+count]
-	} else {
-		offset := int(order.Uint32(entry[8:12]))
-		if offset < 0 || offset+int(count) > len(tiff) {
+	raw, ok := exifValueBytes(tiff, order, entry, typ, count)
+	if !ok {
+		return "", false
+	}
+	switch typ {
+	case 2:
+		return string(bytes.TrimRight(raw, "\x00")), true
+	case 1, 7:
+		if count > 32 {
 			return "", false
 		}
-		raw = tiff[offset : offset+int(count)]
+		values := make([]string, 0, len(raw))
+		for _, b := range raw {
+			values = append(values, fmt.Sprint(b))
+		}
+		return strings.Join(values, ","), true
+	case 3:
+		values := make([]string, 0, count)
+		for i := 0; i+2 <= len(raw); i += 2 {
+			values = append(values, fmt.Sprint(order.Uint16(raw[i:i+2])))
+		}
+		return strings.Join(values, ","), true
+	case 4:
+		values := make([]string, 0, count)
+		for i := 0; i+4 <= len(raw); i += 4 {
+			values = append(values, fmt.Sprint(order.Uint32(raw[i:i+4])))
+		}
+		return strings.Join(values, ","), true
+	case 5:
+		values := make([]string, 0, count)
+		for i := 0; i+8 <= len(raw); i += 8 {
+			values = append(values, fmt.Sprintf("%d/%d", order.Uint32(raw[i:i+4]), order.Uint32(raw[i+4:i+8])))
+		}
+		return strings.Join(values, ","), true
+	case 9:
+		values := make([]string, 0, count)
+		for i := 0; i+4 <= len(raw); i += 4 {
+			values = append(values, fmt.Sprint(int32(order.Uint32(raw[i:i+4]))))
+		}
+		return strings.Join(values, ","), true
+	case 10:
+		values := make([]string, 0, count)
+		for i := 0; i+8 <= len(raw); i += 8 {
+			values = append(values, fmt.Sprintf("%d/%d", int32(order.Uint32(raw[i:i+4])), int32(order.Uint32(raw[i+4:i+8]))))
+		}
+		return strings.Join(values, ","), true
+	default:
+		return "", false
 	}
-	return string(bytes.TrimRight(raw, "\x00")), true
+}
+
+func exifValueBytes(tiff []byte, order binary.ByteOrder, entry []byte, typ uint16, count uint32) ([]byte, bool) {
+	typeSize := exifTypeSize(typ)
+	if typeSize == 0 {
+		return nil, false
+	}
+	size := int(count) * typeSize
+	var raw []byte
+	if size <= 4 {
+		raw = entry[8 : 8+size]
+	} else {
+		offset := int(order.Uint32(entry[8:12]))
+		if offset < 0 || offset+size > len(tiff) {
+			return nil, false
+		}
+		raw = tiff[offset : offset+size]
+	}
+	return raw, true
+}
+
+func exifTypeSize(typ uint16) int {
+	switch typ {
+	case 1, 2, 7:
+		return 1
+	case 3:
+		return 2
+	case 4, 9:
+		return 4
+	case 5, 10:
+		return 8
+	default:
+		return 0
+	}
 }

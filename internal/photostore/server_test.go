@@ -73,13 +73,16 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if acquired[0].ViewURL == "" {
 		t.Fatalf("missing view url in acquired file: %#v", acquired[0])
 	}
+	if acquired[0].BytesURL == "" {
+		t.Fatalf("missing bytes url in acquired file: %#v", acquired[0])
+	}
 	if acquired[0].ThumbnailURL == "" {
 		t.Fatalf("missing thumbnail url in acquired file: %#v", acquired[0])
 	}
 	if acquired[0].Filename == "" {
 		t.Fatalf("missing filename in acquired file: %#v", acquired[0])
 	}
-	res, err := http.Get(ts.URL + acquired[0].ViewURL)
+	res, err := http.Get(ts.URL + acquired[0].BytesURL)
 	if err != nil {
 		t.Fatal(err)
 	}

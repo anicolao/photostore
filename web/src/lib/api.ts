@@ -1,4 +1,4 @@
-import type { AcquiredFile, DatedPhotoResponse, HistoricalInventory, Job, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
+import type { AcquiredFile, DatedPhotoResponse, HistoricalInventory, Job, ObjectMetadata, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -76,6 +76,10 @@ export function getReport(scanID: string): Promise<ScanReport> {
 
 export function getAcquiredFiles(scanID: string): Promise<AcquiredFile[]> {
   return request(`/api/scans/${scanID}/acquired`);
+}
+
+export function getObjectMetadata(storedObjectID: string): Promise<ObjectMetadata> {
+  return request(`/api/objects/${storedObjectID}/metadata`);
 }
 
 export function getInventories(): Promise<HistoricalInventory[]> {

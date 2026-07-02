@@ -46,6 +46,7 @@ export type AcquiredFile = {
   scan_id: string;
   content_ref: string;
   view_url: string;
+  bytes_url: string;
   thumbnail_url: string;
 };
 
@@ -71,12 +72,22 @@ export type DatedPhoto = {
   utc_offset?: string;
   precision?: string;
   view_url: string;
+  bytes_url: string;
   thumbnail_url: string;
 };
 
 export type DatedPhotoResponse = {
   bucket_key: string;
   photos: DatedPhoto[];
+};
+
+export type ObjectMetadata = {
+  stored_object_id: string;
+  content_ref: string;
+  extractor_name: string;
+  extractor_version: number;
+  metadata_event_id: string;
+  fields: Record<string, Record<string, string>>;
 };
 
 export type HistoricalInventory = {
