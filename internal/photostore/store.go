@@ -271,6 +271,121 @@ func (s *Store) ScanSources(progress ProgressFunc) (string, error) {
 	return s.ScanSourceRoots(nil, progress)
 }
 
+func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, error) {
+	if scanID == "" {
+		return "", errors.New("scan id is required")
+	}
+	status, err := s.scanStatus(scanID)
+	if err != nil {
+		return "", err
+	}
+	if status == "completed" {
+		return scanID, nil
+	}
+	roots, err := s.sourceRootsForScan(scanID)
+	if err != nil {
+		return "", err
+	}
+	if len(roots) == 0 {
+		return "", fmt.Errorf("scan %s cannot be resumed: no source roots are recorded for it", scanID)
+	}
+	processed, err := s.processedSourceRelativePaths(scanID)
+	if err != nil {
+		return "", err
+	}
+	report, err := s.resumeReport(scanID, roots)
+	if err != nil {
+		return "", err
+	}
+	if err := s.appendEvent("IngestionScanResumeRequested", nil, &scanID, map[string]any{
+		"scan_id":          scanID,
+		"resumed_at_ms":    nowMS(),
+		"source_roots":     rootPayloads(roots),
+		"already_acquired": report.SourceFilesAcquired,
+	}); err != nil {
+		return "", err
+	}
+	for _, root := range roots {
+		progressf(progress, "resuming source root %s (%s)", root.Label, root.Path)
+		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if d.IsDir() {
+				report.DirectoriesSeen++
+				return nil
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			report.RegularFilesSeen++
+			if !isJPEG(path) {
+				report.NonCandidateFilesSkipped++
+				return nil
+			}
+			report.CandidateFilesSeen++
+			rel, _ := filepath.Rel(root.Path, path)
+			relSlash := filepath.ToSlash(rel)
+			if processed[root.ID][relSlash] {
+				return nil
+			}
+			progressf(progress, "acquiring %s", path)
+			entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
+				"scan_id":                 scanID,
+				"source_root_id":          root.ID,
+				"source_kind":             "source_root",
+				"path":                    path,
+				"relative_path":           relSlash,
+				"historical_inventory_id": nil,
+				"inventory_entry_id":      nil,
+				"entry_type":              "regular_file",
+				"filesystem":              statPayload(path),
+				"candidate_reason": map[string]any{
+					"method":    "extension",
+					"extension": strings.ToLower(filepath.Ext(path)),
+				},
+			})
+			if err != nil {
+				return err
+			}
+			if err := s.acquireSourceFile(scanID, &entryID, root.ID, "source_root", path, relSlash, "", "", report); err != nil {
+				report.SourceFileAcquireFailures++
+			}
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := s.writeReport(report); err != nil {
+		return "", err
+	}
+	if err := s.appendEvent("IngestionScanCompleted", nil, &scanID, map[string]any{
+		"scan_id":         scanID,
+		"completed_at_ms": nowMS(),
+		"status":          "completed",
+		"stats": map[string]any{
+			"source_roots_scanned":           report.SourceRootsScanned,
+			"directories_seen":               report.DirectoriesSeen,
+			"regular_files_seen":             report.RegularFilesSeen,
+			"candidate_files_seen":           report.CandidateFilesSeen,
+			"source_files_acquired":          report.SourceFilesAcquired,
+			"source_file_acquire_failures":   report.SourceFileAcquireFailures,
+			"content_addresses_materialized": report.ContentAddressesMaterialized,
+			"duplicate_acquisitions":         report.DuplicateAcquisitions,
+			"duplicate_garbage_bytes":        report.DuplicateGarbageBytes,
+			"non_candidate_files_skipped":    report.NonCandidateFilesSkipped,
+		},
+		"report_paths": map[string]any{
+			"json": filepath.Join(s.Root, "reports", "scan-"+scanID+".json"),
+			"text": filepath.Join(s.Root, "reports", "scan-"+scanID+".txt"),
+		},
+	}); err != nil {
+		return "", err
+	}
+	return scanID, nil
+}
+
 func (s *Store) ScanSourceRoots(sourceRootIDs []string, progress ProgressFunc) (string, error) {
 	scanID := newID("scan")
 	roots, err := s.sourceRoots()
@@ -779,6 +894,114 @@ func (s *Store) sourceRoots() ([]SourceRoot, error) {
 		}
 	}
 	return out, nil
+}
+
+func (s *Store) scanStatus(scanID string) (string, error) {
+	var status string
+	if err := s.DB.QueryRow(`select status from scans where scan_id = ?`, scanID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("scan %s is not known", scanID)
+		}
+		return "", err
+	}
+	return status, nil
+}
+
+func (s *Store) sourceRootsForScan(scanID string) ([]SourceRoot, error) {
+	rows, err := s.DB.Query(`
+		select distinct sr.source_root_id, sr.root_path, sr.label
+		from source_roots sr
+		join source_root_scans srs on srs.source_root_id = sr.source_root_id
+		where srs.scan_id = ?
+		order by sr.root_path`, scanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roots []SourceRoot
+	for rows.Next() {
+		var root SourceRoot
+		if err := rows.Scan(&root.ID, &root.Path, &root.Label); err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(roots) > 0 {
+		return roots, nil
+	}
+	rows, err = s.DB.Query(`
+		select distinct sr.source_root_id, sr.root_path, sr.label
+		from source_roots sr
+		join source_occurrences so on so.source_root_id = sr.source_root_id
+		where so.scan_id = ?
+		order by sr.root_path`, scanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var root SourceRoot
+		if err := rows.Scan(&root.ID, &root.Path, &root.Label); err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	return roots, rows.Err()
+}
+
+func (s *Store) processedSourceRelativePaths(scanID string) (map[string]map[string]bool, error) {
+	rows, err := s.DB.Query(`
+		select coalesce(source_root_id, ''), relative_path
+		from source_occurrences
+		where scan_id = ? and source_kind = 'source_root' and stored_object_id is not null`, scanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]bool{}
+	for rows.Next() {
+		var rootID, rel string
+		if err := rows.Scan(&rootID, &rel); err != nil {
+			return nil, err
+		}
+		if out[rootID] == nil {
+			out[rootID] = map[string]bool{}
+		}
+		out[rootID][rel] = true
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) resumeReport(scanID string, roots []SourceRoot) (*ScanReport, error) {
+	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
+	rows, err := s.DB.Query(`
+		select coalesce(scl.content_ref, ''), scl.cas_existed_at_ingest
+		from source_occurrences so
+		left join source_content_links scl on scl.source_occurrence_id = so.source_occurrence_id
+		where so.scan_id = ? and so.stored_object_id is not null`, scanID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ref string
+		var existed sql.NullInt64
+		if err := rows.Scan(&ref, &existed); err != nil {
+			return nil, err
+		}
+		report.SourceFilesAcquired++
+		if existed.Valid && existed.Int64 == 1 {
+			report.DuplicateAcquisitions++
+			_, _, size := parseContentRef(ref)
+			report.DuplicateGarbageBytes += size
+		} else if existed.Valid {
+			report.ContentAddressesMaterialized++
+		}
+	}
+	return report, rows.Err()
 }
 
 func filterSourceRoots(roots []SourceRoot, ids []string) ([]SourceRoot, error) {

@@ -52,6 +52,17 @@ export function getJob(jobID: string): Promise<Job> {
   return request(`/api/jobs/${jobID}`);
 }
 
+export function getJobs(): Promise<Job[]> {
+  return request('/api/jobs');
+}
+
+export function resumeScan(scanID: string): Promise<Job> {
+  return request(`/api/scans/${scanID}/resume`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function getReport(scanID: string): Promise<ScanReport> {
   return request(`/api/scans/${scanID}/report`);
 }

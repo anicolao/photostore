@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { addSource, getInventories, getJob, getScans, getSources, getStore, startSingleSourceScan, startSourceScan } from '$lib/api';
+  import { addSource, getInventories, getJob, getJobs, getScans, getSources, getStore, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
   import type { HistoricalInventory, Job, ScanProjection, SourceRoot, StoreSummary } from '$lib/types';
 
   let store: StoreSummary | null = null;
@@ -19,12 +19,21 @@
     if (showLoading) {
       loading = true;
     }
-    [store, sources, scans, inventories] = await Promise.all([
+    const [nextStore, nextSources, nextScans, nextInventories, jobs] = await Promise.all([
       getStore(),
       getSources(),
       getScans(),
-      getInventories()
+      getInventories(),
+      getJobs()
     ]);
+    store = nextStore;
+    sources = nextSources;
+    scans = nextScans;
+    inventories = nextInventories;
+    const runningJob = jobs.find((job) => job.status === 'running') ?? null;
+    if (runningJob || activeJob?.status === 'running') {
+      activeJob = runningJob;
+    }
     if (showLoading) {
       loading = false;
     }
@@ -79,6 +88,10 @@
     await runScan(() => startSingleSourceScan(sourceRootID));
   }
 
+  async function resume(scanID: string) {
+    await runScan(() => resumeScan(scanID));
+  }
+
   function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -96,6 +109,21 @@
 
   function hasKnownAcquiredCount(scan: ScanProjection) {
     return scan.report?.source_files_acquired !== null && scan.report?.source_files_acquired !== undefined;
+  }
+
+  function canDrillDown(scan: ScanProjection) {
+    return hasKnownAcquiredCount(scan) || scan.status === 'started';
+  }
+
+  function canResume(scan: ScanProjection) {
+    return scan.status === 'started' && activeJob?.status !== 'running';
+  }
+
+  function scanStatus(scan: ScanProjection) {
+    if (scan.status === 'started') {
+      return activeJob?.status === 'running' ? 'running' : 'incomplete';
+    }
+    return scan.status;
   }
 
   function formatOptionalBytes(value: number | null | undefined) {
@@ -245,15 +273,16 @@
             <th>Acquired</th>
             <th>Duplicates</th>
             <th>Duplicate bytes</th>
+            <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           {#each scans as scan}
             <tr>
               <td><code>{scan.scan_id}</code></td>
-              <td>{scan.status}</td>
+              <td>{scanStatus(scan)}</td>
               <td>
-                {#if hasKnownAcquiredCount(scan)}
+                {#if canDrillDown(scan)}
                   <a data-testid="scan-acquired-link" href={`/scans/${scan.scan_id}`}>
                     {formatOptionalNumber(scan.report?.source_files_acquired)}
                   </a>
@@ -263,6 +292,11 @@
               </td>
               <td>{formatOptionalNumber(scan.report?.duplicate_acquisitions)}</td>
               <td>{formatOptionalBytes(scan.report?.duplicate_garbage_bytes)}</td>
+              <td>
+                {#if canResume(scan)}
+                  <button data-testid="resume-scan-{scan.scan_id}" on:click={() => resume(scan.scan_id)}>Resume</button>
+                {/if}
+              </td>
             </tr>
           {/each}
         </tbody>

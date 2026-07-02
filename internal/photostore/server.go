@@ -64,6 +64,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sources/{source_root_id}/scan", s.handleStartSingleSourceScan)
 	s.mux.HandleFunc("GET /api/scans", s.handleScans)
 	s.mux.HandleFunc("POST /api/scans", s.handleStartSourceScan)
+	s.mux.HandleFunc("POST /api/scans/{scan_id}/resume", s.handleResumeScan)
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/report", s.handleScanReport)
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/acquired", s.handleScanAcquiredFiles)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
@@ -72,6 +73,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
+	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/{job_id}", s.handleJob)
 	s.mux.HandleFunc("/", s.handleStatic)
 }
@@ -156,6 +158,21 @@ func (s *Server) handleStartSingleSourceScan(w http.ResponseWriter, r *http.Requ
 		}
 		s.store.EnsureThumbnailsForScan(scanID, progress)
 		return scanID, nil
+	})
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) handleResumeScan(w http.ResponseWriter, r *http.Request) {
+	scanID := r.PathValue("scan_id")
+	job := s.startJob("source_scan_resume", func(progress ProgressFunc) (string, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		resumedScanID, err := s.store.ResumeSourceScan(scanID, progress)
+		if err != nil {
+			return "", err
+		}
+		s.store.EnsureThumbnailsForScan(resumedScanID, progress)
+		return resumedScanID, nil
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }
@@ -298,6 +315,10 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, job)
 }
 
+func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.jobList())
+}
+
 func (s *Server) startJob(kind string, work func(ProgressFunc) (string, error)) *Job {
 	job := &Job{JobID: newID("job"), Kind: kind, Status: "running", StartedAtMS: nowMS()}
 	s.jobsMu.Lock()
@@ -325,6 +346,18 @@ func (s *Server) startJob(kind string, work func(ProgressFunc) (string, error)) 
 	}()
 	copyJob := *job
 	return &copyJob
+}
+
+func (s *Server) jobList() []*Job {
+	s.jobsMu.Lock()
+	defer s.jobsMu.Unlock()
+	out := make([]*Job, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		copyJob := *job
+		copyJob.Progress = append([]string(nil), job.Progress...)
+		out = append(out, &copyJob)
+	}
+	return out
 }
 
 func (s *Server) job(id string) (*Job, bool) {
