@@ -10,7 +10,7 @@ name: CI
 jobs:
   test:
     name: Go and E2E Tests
-    runs-on: macos-15
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
