@@ -69,6 +69,20 @@
     return new Intl.NumberFormat('en-CA').format(bytes);
   }
 
+  function formatOptionalNumber(value: number | null | undefined) {
+    if (value === null || value === undefined) {
+      return 'Unknown';
+    }
+    return new Intl.NumberFormat('en-CA').format(value);
+  }
+
+  function formatOptionalBytes(value: number | null | undefined) {
+    if (value === null || value === undefined) {
+      return 'Unknown';
+    }
+    return formatBytes(value);
+  }
+
   load();
 </script>
 
@@ -171,9 +185,9 @@
             <tr>
               <td><code>{scan.scan_id}</code></td>
               <td>{scan.status}</td>
-              <td>{scan.report?.source_files_acquired ?? 0}</td>
-              <td>{scan.report?.duplicate_acquisitions ?? 0}</td>
-              <td>{formatBytes(scan.report?.duplicate_garbage_bytes ?? 0)}</td>
+              <td>{formatOptionalNumber(scan.report?.source_files_acquired)}</td>
+              <td>{formatOptionalNumber(scan.report?.duplicate_acquisitions)}</td>
+              <td>{formatOptionalBytes(scan.report?.duplicate_garbage_bytes)}</td>
             </tr>
           {/each}
         </tbody>

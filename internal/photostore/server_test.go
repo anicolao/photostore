@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -55,10 +56,50 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if len(scans) != 1 || scans[0].ScanID != *done.ResultRef {
 		t.Fatalf("scans = %#v, want completed scan %s", scans, *done.ResultRef)
 	}
+	if scans[0].Report == nil || scans[0].Report.DuplicateAcquisitions == nil || *scans[0].Report.DuplicateAcquisitions != 1 {
+		t.Fatalf("scan report duplicate acquisitions = %#v, want known 1", scans[0].Report)
+	}
 	var summary StoreSummary
 	getJSON(t, ts.URL+"/api/store", &summary)
 	if summary.RetainedDuplicateBytes != int64(len("one")) {
 		t.Fatalf("retained duplicate bytes = %d, want %d", summary.RetainedDuplicateBytes, len("one"))
+	}
+}
+
+func TestScansPreserveUnknownDuplicateStats(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	scanID := "scan_legacy"
+	if _, err := st.DB.Exec(`insert into scans(scan_id,status,completed_at_ms,stats_json) values(?,?,?,?)`, scanID, "completed", int64(123), `{"source_files_acquired":533}`); err != nil {
+		t.Fatal(err)
+	}
+	reportPath := filepath.Join(st.Root, "reports", "scan-"+scanID+".json")
+	if err := os.WriteFile(reportPath, []byte(`{"scan_id":"scan_legacy","source_files_acquired":533}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scans, err := st.Scans(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scans) != 1 {
+		t.Fatalf("scans = %d, want 1", len(scans))
+	}
+	if scans[0].Report == nil {
+		t.Fatal("missing scan report projection")
+	}
+	if scans[0].Report.SourceFilesAcquired == nil || *scans[0].Report.SourceFilesAcquired != 533 {
+		t.Fatalf("source files acquired = %#v, want known 533", scans[0].Report.SourceFilesAcquired)
+	}
+	if scans[0].Report.DuplicateAcquisitions != nil {
+		t.Fatalf("duplicate acquisitions = %#v, want unknown", scans[0].Report.DuplicateAcquisitions)
+	}
+	if scans[0].Report.DuplicateGarbageBytes != nil {
+		t.Fatalf("duplicate garbage bytes = %#v, want unknown", scans[0].Report.DuplicateGarbageBytes)
 	}
 }
 
