@@ -297,6 +297,7 @@
     </div>
     <div class="topbar-actions">
       <a class="button-link" data-testid="photos-by-date-link" href="/photos/dates">Photos by date</a>
+      <a class="button-link" data-testid="metadata-link" href="/metadata">Metadata</a>
       <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={runningJobActive}>Refresh metadata</button>
       <button on:click={() => refresh(true)} disabled={loading}>Refresh</button>
     </div>

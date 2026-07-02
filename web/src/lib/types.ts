@@ -90,6 +90,26 @@ export type ObjectMetadata = {
   fields: Record<string, Record<string, string>>;
 };
 
+export type MetadataSummary = {
+  content_count: number;
+  extracted_count: number;
+  failed_count: number;
+  missing_count: number;
+  extractor_name: string;
+  extractor_version: number;
+};
+
+export type MetadataPhoto = {
+  stored_object_id: string;
+  content_ref: string;
+  filename: string;
+  relative_path: string;
+  status: 'failed' | 'missing';
+  error_message?: string;
+  view_url: string;
+  thumbnail_url: string;
+};
+
 export type HistoricalInventory = {
   historical_inventory_id: string;
   original_path: string;

@@ -82,6 +82,24 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if acquired[0].Filename == "" {
 		t.Fatalf("missing filename in acquired file: %#v", acquired[0])
 	}
+	var metadataSummary MetadataSummaryProjection
+	getJSON(t, ts.URL+"/api/metadata/summary", &metadataSummary)
+	if metadataSummary.FailedCount != 1 {
+		t.Fatalf("metadata failed count = %d, want 1 for fixture without EXIF", metadataSummary.FailedCount)
+	}
+	var metadataFailures []MetadataPhotoProjection
+	getJSON(t, ts.URL+"/api/metadata/failures", &metadataFailures)
+	if len(metadataFailures) != 1 {
+		t.Fatalf("metadata failures = %d, want 1", len(metadataFailures))
+	}
+	if metadataFailures[0].ErrorMessage == "" {
+		t.Fatalf("metadata failure missing error message: %#v", metadataFailures[0])
+	}
+	var metadataMissing []MetadataPhotoProjection
+	getJSON(t, ts.URL+"/api/metadata/missing", &metadataMissing)
+	if len(metadataMissing) != 0 {
+		t.Fatalf("metadata missing = %d, want 0", len(metadataMissing))
+	}
 	res, err := http.Get(ts.URL + acquired[0].BytesURL)
 	if err != nil {
 		t.Fatal(err)

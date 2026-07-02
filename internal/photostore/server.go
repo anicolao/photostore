@@ -96,6 +96,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/inventories", s.handleInventories)
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
+	s.mux.HandleFunc("GET /api/metadata/summary", s.handleMetadataSummary)
+	s.mux.HandleFunc("GET /api/metadata/failures", s.handleMetadataFailures)
+	s.mux.HandleFunc("GET /api/metadata/missing", s.handleMetadataMissing)
 	s.mux.HandleFunc("POST /api/metadata/refresh-missing", s.handleRefreshMissingMetadata)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	s.mux.HandleFunc("GET /api/events/ws", s.handleEventWebSocket)
@@ -378,6 +381,33 @@ func (s *Server) handleScanInventory(w http.ResponseWriter, r *http.Request) {
 		return scanID, nil
 	})
 	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) handleMetadataSummary(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.store.MetadataSummary()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (s *Server) handleMetadataFailures(w http.ResponseWriter, r *http.Request) {
+	photos, err := s.store.MetadataFailures()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, photos)
+}
+
+func (s *Server) handleMetadataMissing(w http.ResponseWriter, r *http.Request) {
+	photos, err := s.store.MetadataMissing()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, photos)
 }
 
 func (s *Server) handleRefreshMissingMetadata(w http.ResponseWriter, r *http.Request) {
