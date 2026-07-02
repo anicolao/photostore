@@ -8,8 +8,10 @@ The goal is to let the user browse ingested photos by when the photo was taken, 
 
 The feature includes:
 
-- Extracting capture-time metadata from acquired JPEG objects.
+- Extracting capture-time metadata while scanning and acquiring JPEG bytes.
 - Recording extraction facts as events.
+- Avoiding duplicate metadata events when identical content already has metadata for the active extractor version.
+- Comparing duplicate-content metadata observations against the existing metadata projection and recording explicit issues when they disagree.
 - Allowing explicit user corrections when extracted capture time is wrong or missing.
 - Building projections that support year, month, day, and timeline views.
 - Adding UI routes that browse photos by capture date and link to existing image/object views.
@@ -35,6 +37,12 @@ The system should distinguish:
 - User corrections, such as "this photo was taken on 2007-08-12 at 15:31."
 
 No reducer should invent a capture time from unrelated operational timestamps. If no supported capture-time metadata or correction exists, the asset belongs in an explicit undated view.
+
+Metadata extraction should happen while ingestion already has the image bytes in hand. Scan/acquisition should not defer ordinary metadata extraction to a second pass for new content.
+
+Metadata events are content facts for a specific extractor version. If a scan sees bytes whose `content_ref` already has a successful metadata event for the active extractor version, the scan should not append another identical `PhotoMetadataExtracted` event. It should compare the current observation to the existing metadata projection. If the comparison matches, no metadata event is needed. If it disagrees, append an explicit issue event.
+
+When the extractor changes meaningfully, such as adding location fields for location-based indexing, the extractor version changes. The same content may then receive a new `PhotoMetadataExtracted` event for the new extractor version.
 
 ## Metadata Sources
 
@@ -63,43 +71,9 @@ Those may be separate future features, but they require explicit events and revi
 
 Events should record extraction operations and user intent. Reducer conclusions, such as "effective capture date is 2009-04-18," should not be events unless the user explicitly corrected it.
 
-### `MetadataExtractionRequested`
-
-Records that metadata extraction should run for a set of stored objects.
-
-Payload:
-
-```json
-{
-  "request_id": "meta_req_...",
-  "stored_object_ids": ["obj_..."],
-  "media_kind": "jpeg",
-  "extractor": {
-    "name": "photostore-exif",
-    "version": 1
-  },
-  "requested_at_ms": 1782931320123
-}
-```
-
-For large batches, the event may reference a scan id instead of listing every object:
-
-```json
-{
-  "request_id": "meta_req_...",
-  "scan_id": "scan_...",
-  "media_kind": "jpeg",
-  "extractor": {
-    "name": "photostore-exif",
-    "version": 1
-  },
-  "requested_at_ms": 1782931320123
-}
-```
-
 ### `PhotoMetadataExtracted`
 
-Records metadata extracted from one Photostore-owned stored object.
+Records metadata extracted from one newly observed content value using one extractor version.
 
 Payload:
 
@@ -107,10 +81,15 @@ Payload:
 {
   "stored_object_id": "obj_...",
   "source_occurrence_id": "occ_...",
+  "scan_id": "scan_...",
   "content_ref": "sha256:...:12345",
   "extractor": {
     "name": "photostore-exif",
     "version": 1
+  },
+  "extraction_context": {
+    "phase": "ingestion_scan",
+    "source_kind": "source_root"
   },
   "extracted_at_ms": 1782931320456,
   "fields": {
@@ -142,7 +121,12 @@ Payload:
 }
 ```
 
-If extraction fails, record an explicit failure event rather than omitting the object.
+This event should be emitted when either:
+
+- The content is new to the metadata projection.
+- The content has metadata, but not for the active extractor version.
+
+It should not be emitted merely because the same bytes appeared at another path.
 
 ### `PhotoMetadataExtractionFailed`
 
@@ -152,6 +136,7 @@ Payload:
 {
   "stored_object_id": "obj_...",
   "source_occurrence_id": "occ_...",
+  "scan_id": "scan_...",
   "content_ref": "sha256:...:12345",
   "extractor": {
     "name": "photostore-exif",
@@ -162,6 +147,46 @@ Payload:
     "type": "decode_error",
     "message": "missing EXIF segment",
     "retryable": false
+  }
+}
+```
+
+### `PhotoMetadataObservationMatched`
+
+This is not an event.
+
+When a scan sees duplicate content and the active extractor version already has metadata for that `content_ref`, the scanner should compare the current extracted metadata observation to the metadata projection. If it matches, that is a reducer/query conclusion and should remain unlogged.
+
+### `PhotoMetadataObservationMismatchDetected`
+
+Records that a duplicate-content observation produced metadata that disagrees with the existing metadata projection for the same `content_ref` and extractor version.
+
+This should be rare. It can indicate a nondeterministic extractor, corrupt stored bytes, an incorrect `content_ref`, an extractor bug, or a parsing/versioning error.
+
+Payload:
+
+```json
+{
+  "stored_object_id": "obj_...",
+  "source_occurrence_id": "occ_...",
+  "scan_id": "scan_...",
+  "content_ref": "sha256:...:12345",
+  "extractor": {
+    "name": "photostore-exif",
+    "version": 1
+  },
+  "detected_at_ms": 1782931320456,
+  "existing_metadata_event_id": "evt_...",
+  "differences": [
+    {
+      "field": "datetime_original.raw",
+      "existing": "2012:07:04 18:22:11",
+      "observed": "2012:07:04 18:22:12"
+    }
+  ],
+  "issue": {
+    "type": "metadata_mismatch",
+    "severity": "error"
   }
 }
 ```
@@ -231,7 +256,8 @@ Selection order:
 The projection should preserve why a capture time was selected:
 
 ```text
-stored_object_id
+content_ref
+representative_stored_object_id
 effective_capture_time_local
 effective_capture_time_utc
 utc_offset
@@ -254,6 +280,7 @@ Suggested tables:
 
 ```text
 photo_capture_times(
+  content_ref,
   stored_object_id primary key,
   source_occurrence_id,
   scan_id,
@@ -268,6 +295,29 @@ photo_capture_times(
   extractor_name,
   extractor_version,
   raw_value
+)
+
+content_metadata(
+  content_ref,
+  extractor_name,
+  extractor_version,
+  metadata_event_id,
+  extracted_at_ms,
+  fields_json,
+  warnings_json,
+  primary key(content_ref, extractor_name, extractor_version)
+)
+
+metadata_issues(
+  issue_event_id primary key,
+  content_ref,
+  stored_object_id,
+  source_occurrence_id,
+  extractor_name,
+  extractor_version,
+  issue_type,
+  severity,
+  details_json
 )
 
 photo_date_buckets(
@@ -330,12 +380,13 @@ Example day response:
 Initial command APIs:
 
 ```text
-POST /api/metadata/extract
 POST /api/objects/{stored_object_id}/capture-time
 DELETE /api/objects/{stored_object_id}/capture-time
 ```
 
 Commands should append events. Read APIs should query projections.
+
+Metadata extraction normally runs during ingestion scans. A separate metadata command is only needed when intentionally running a new extractor version over already stored content.
 
 ## UI Design
 
@@ -368,9 +419,33 @@ The UI should make source quality visible:
 
 The UI should provide a way to open metadata details for a photo. Details should show raw extracted values and the event/source used for the effective capture time.
 
-## Backfill Workflow
+## Scan-Time Extraction Workflow
 
-This feature needs a metadata extraction command over already ingested objects:
+During source scan acquisition:
+
+1. Copy JPEG bytes into the acquired object while computing SHA-256 and size.
+2. Compute `content_ref` from the measured hash and size.
+3. Extract metadata from the Photostore-owned acquired object while the scan still has the object in scope.
+4. Query the metadata projection for `(content_ref, extractor_name, extractor_version)`.
+5. If no projection row exists, append `PhotoMetadataExtracted` or `PhotoMetadataExtractionFailed`.
+6. If a projection row exists, compare the current observation to the projected metadata.
+7. If the observation matches, append no metadata event.
+8. If the observation differs, append `PhotoMetadataObservationMismatchDetected`.
+
+This workflow prevents the event log from growing with repeated identical metadata facts for duplicate files while still detecting unexpected extractor or storage inconsistencies.
+
+The scanner must use the Photostore-owned acquired object for extraction, not the original external path, so the operation remains grounded in durable input.
+
+## Extractor Version Workflow
+
+When metadata semantics change, create a new extractor version. Examples:
+
+- Adding GPS/location fields.
+- Changing timestamp parsing rules.
+- Fixing EXIF offset parsing.
+- Recording additional raw fields needed by a new projection.
+
+For a new extractor version, already stored content needs an explicit command:
 
 ```text
 photostore metadata extract --store ./photostore-data --scan-id scan_...
@@ -385,12 +460,12 @@ The command should:
 - Update projections through normal event application.
 - Produce a metadata extraction report.
 
-This is not a legacy fallback. It is an explicit command that creates missing required events for stored objects that predate metadata extraction.
+This is not a fallback. It is an explicit command for applying a new extractor version to existing Photostore-owned content.
 
 ## Open Questions
 
 - Should the first implementation target stored objects directly, or introduce an asset projection first?
 - Should capture-time corrections be per stored object for MVP and later lifted to assets?
-- Should metadata extraction run automatically after ingestion, or remain an explicit command/job?
+- Should metadata extraction block scan completion, or can scan completion report pending metadata extraction failures separately?
 - Should the UI expose bulk date correction in the first version?
 - What extractor library should be used in Go for EXIF parsing, and how should extractor versioning be defined?
