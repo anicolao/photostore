@@ -209,6 +209,88 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	}
 }
 
+func TestStaleDeduplicationStrategyRequiresReassessment(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	content := []byte("same")
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), content)
+	mustWrite(t, filepath.Join(sourcePath, "B.jpeg"), content)
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSources(nil); err != nil {
+		t.Fatal(err)
+	}
+	candidate := retainedDuplicateCandidate(t, st)
+	if err := st.appendEvent("DuplicateSourceObjectDeduplicated", nil, nil, map[string]any{
+		"source_occurrence_id": candidate.SourceOccurrenceID,
+		"stored_object_id":     candidate.StoredObjectID,
+		"content_ref":          candidate.ContentRef,
+		"deduplicated_at_ms":   nowMS(),
+		"verification": map[string]any{
+			"hash_algorithm":  "sha256",
+			"canonical_hash":  sha(content),
+			"duplicate_hash":  sha(content),
+			"byte_comparison": true,
+			"bytes_compared":  len(content),
+		},
+		"storage": map[string]any{
+			"duplicate_deleted": true,
+			"replacement": map[string]any{
+				"method": "apfs_clone",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	stale, err := st.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale.RetainedDuplicateBytes != int64(len(content)) {
+		t.Fatalf("stale retained duplicate bytes = %d, want %d", stale.RetainedDuplicateBytes, len(content))
+	}
+	summary, err := st.VerifyAndDeduplicate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Candidates != 1 || summary.Deduplicated != 1 {
+		t.Fatalf("deduplicate summary = %#v, want stale candidate reassessed", summary)
+	}
+	current, err := st.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.RetainedDuplicateBytes != 0 {
+		t.Fatalf("current retained duplicate bytes = %d, want 0", current.RetainedDuplicateBytes)
+	}
+	assertSameFile(t, retainedDuplicatePathByKey(t, st, candidate.AcquiredStorageKey), filepath.Join(st.Root, filepath.FromSlash(casKey(candidate.ContentRef))))
+	var strategyName string
+	var strategyVersion int
+	if err := st.DB.QueryRow(`select strategy_name, strategy_version from duplicate_deduplications where source_occurrence_id = ?`, candidate.SourceOccurrenceID).Scan(&strategyName, &strategyVersion); err != nil {
+		t.Fatal(err)
+	}
+	if strategyName != dedupStrategyName || strategyVersion != dedupStrategyVersion {
+		t.Fatalf("strategy = %s v%d, want %s v%d", strategyName, strategyVersion, dedupStrategyName, dedupStrategyVersion)
+	}
+}
+
 func TestOpenUninitializedStoreReturnsActionableError(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing-store")
 	_, err := Open(root)
@@ -222,6 +304,25 @@ func TestOpenUninitializedStoreReturnsActionableError(t *testing.T) {
 	if !strings.Contains(got, "--store PATH") {
 		t.Fatalf("error = %q, want alternate store guidance", got)
 	}
+}
+
+func retainedDuplicateCandidate(t *testing.T, st *Store) duplicateCandidate {
+	t.Helper()
+	var candidate duplicateCandidate
+	if err := st.DB.QueryRow(`
+		select scl.source_occurrence_id, scl.stored_object_id, scl.content_ref, st.acquired_storage_key
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		where scl.cas_existed_at_ingest = 1
+		limit 1`).Scan(&candidate.SourceOccurrenceID, &candidate.StoredObjectID, &candidate.ContentRef, &candidate.AcquiredStorageKey); err != nil {
+		t.Fatal(err)
+	}
+	return candidate
+}
+
+func retainedDuplicatePathByKey(t *testing.T, st *Store, key string) string {
+	t.Helper()
+	return filepath.Join(st.Root, filepath.FromSlash(key))
 }
 
 func retainedDuplicatePath(t *testing.T, st *Store) string {

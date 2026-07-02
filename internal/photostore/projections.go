@@ -152,7 +152,16 @@ func (s *Store) Summary() (StoreSummary, error) {
 			return summary, err
 		}
 	}
-	rows, err := s.DB.Query(`select content_ref from source_content_links where cas_existed_at_ingest = 1 and acquired_object_retained = 1`)
+	rows, err := s.DB.Query(`
+		select scl.content_ref
+		from source_content_links scl
+		where scl.cas_existed_at_ingest = 1
+			and not exists (
+				select 1 from duplicate_deduplications dd
+				where dd.source_occurrence_id = scl.source_occurrence_id
+					and dd.strategy_name = ?
+					and dd.strategy_version = ?
+			)`, dedupStrategyName, dedupStrategyVersion)
 	if err != nil {
 		return summary, err
 	}

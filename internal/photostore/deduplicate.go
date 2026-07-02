@@ -1,14 +1,17 @@
 package photostore
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type DeduplicateSummary struct {
@@ -19,6 +22,11 @@ type DeduplicateSummary struct {
 	VerificationErrors int    `json:"verification_errors"`
 	RelinkErrors       int    `json:"relink_errors"`
 }
+
+const (
+	dedupStrategyName    = "hard_link"
+	dedupStrategyVersion = 2
+)
 
 type duplicateCandidate struct {
 	SourceOccurrenceID string
@@ -56,9 +64,9 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 			"requires_byte_comparison":       true,
 			"requires_canonical_rehash":      true,
 			"requires_duplicate_rehash":      true,
-			"replacement_order":              []string{"hard_link"},
 			"delete_duplicate_before_relink": true,
 		},
+		"strategy": dedupStrategyPayload(),
 	})
 	if err != nil {
 		return DeduplicateSummary{}, err
@@ -88,6 +96,7 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 			"stored_object_id":     candidate.StoredObjectID,
 			"content_ref":          candidate.ContentRef,
 			"deduplicated_at_ms":   nowMS(),
+			"strategy":             dedupStrategyPayload(),
 			"verification": map[string]any{
 				"hash_algorithm":  "sha256",
 				"canonical_hash":  result.CanonicalHash,
@@ -118,8 +127,13 @@ func (s *Store) duplicateCandidates() ([]duplicateCandidate, error) {
 		from source_content_links scl
 		join stored_objects st on st.stored_object_id = scl.stored_object_id
 		where scl.cas_existed_at_ingest = 1
-			and scl.acquired_object_retained = 1
-		order by scl.source_occurrence_id`)
+			and not exists (
+				select 1 from duplicate_deduplications dd
+				where dd.source_occurrence_id = scl.source_occurrence_id
+					and dd.strategy_name = ?
+					and dd.strategy_version = ?
+			)
+		order by scl.source_occurrence_id`, dedupStrategyName, dedupStrategyVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +148,49 @@ func (s *Store) duplicateCandidates() ([]duplicateCandidate, error) {
 		out = append(out, candidate)
 	}
 	return out, rows.Err()
+}
+
+func dedupStrategyPayload() map[string]any {
+	return map[string]any{
+		"name":    dedupStrategyName,
+		"version": dedupStrategyVersion,
+	}
+}
+
+func (s *Store) rebuildDuplicateDeduplicationProjection() error {
+	if _, err := s.DB.Exec(`delete from duplicate_deduplications`); err != nil {
+		return err
+	}
+	f, err := os.Open(filepath.Join(s.Root, "events", "events.jsonl"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024), 1024*1024*16)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var ev Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return err
+		}
+		if ev.EventType != "DuplicateSourceObjectDeduplicated" {
+			continue
+		}
+		strategy := mapValue(ev.Payload["strategy"])
+		storage := mapValue(ev.Payload["storage"])
+		replacement := mapValue(storage["replacement"])
+		if _, err := s.DB.Exec(`insert or replace into duplicate_deduplications values(?,?,?,?,?,?,?,?)`, str(ev.Payload["source_occurrence_id"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["content_ref"]), ev.EventID, int64Value(ev.Payload["deduplicated_at_ms"]), str(strategy["name"]), int64Value(strategy["version"]), str(replacement["method"])); err != nil {
+			return err
+		}
+	}
+	return sc.Err()
 }
 
 func (s *Store) verifyAndDeduplicateCandidate(candidate duplicateCandidate) (fileVerification, string, error) {
