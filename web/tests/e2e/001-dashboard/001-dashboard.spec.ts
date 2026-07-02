@@ -112,7 +112,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   await page.getByTestId('photo-card').first().click();
   await page.getByTestId('toggle-exif').click();
   await tester.step('image-exif-side-panel', {
-    description: 'The image view shows the original image and an EXIF side panel.',
+    description: 'The image view shows the original image and a readable information side panel.',
     verifications: [
       { spec: 'Image view renders the photo', check: async () => await expect(page.getByTestId('object-image')).toBeVisible() },
       { spec: 'Open original serves image/jpeg', check: async () => {
@@ -123,9 +123,10 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
         expect(imageResponse.headers()['content-type']).toContain('image/jpeg');
       } },
       { spec: 'EXIF panel is visible', check: async () => await expect(page.getByTestId('exif-panel')).toBeVisible() },
-      { spec: 'Camera make is visible', check: async () => await expect(page.getByTestId('exif-panel')).toContainText('Canon') },
-      { spec: 'Camera model is visible', check: async () => await expect(page.getByTestId('exif-panel')).toContainText('EOS 5D') },
-      { spec: 'Capture timestamp is visible', check: async () => await expect(page.getByTestId('exif-panel')).toContainText('2012:07:04 18:22:11') }
+      { spec: 'Camera summary is visible', check: async () => await expect(page.getByTestId('photo-camera')).toHaveText('Canon EOS 5D') },
+      { spec: 'Capture date summary is visible', check: async () => await expect(page.getByTestId('photo-date')).toHaveText('2012-07-04 18:22:11') },
+      { spec: 'Location summary is visible', check: async () => await expect(page.getByTestId('photo-location')).toHaveText('No GPS location') },
+      { spec: 'Raw EXIF debug section is available', check: async () => await expect(page.getByTestId('raw-exif')).toContainText('Raw EXIF') }
     ]
   });
 
