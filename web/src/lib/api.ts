@@ -70,6 +70,13 @@ export function refreshMissingMetadata(): Promise<Job> {
   });
 }
 
+export function deduplicateDuplicates(): Promise<Job> {
+  return request('/api/duplicates/deduplicate', {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function getReport(scanID: string): Promise<ScanReport> {
   return request(`/api/scans/${scanID}/report`);
 }

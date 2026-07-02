@@ -100,6 +100,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/metadata/failures", s.handleMetadataFailures)
 	s.mux.HandleFunc("GET /api/metadata/missing", s.handleMetadataMissing)
 	s.mux.HandleFunc("POST /api/metadata/refresh-missing", s.handleRefreshMissingMetadata)
+	s.mux.HandleFunc("POST /api/duplicates/deduplicate", s.handleDeduplicateDuplicates)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	s.mux.HandleFunc("GET /api/events/ws", s.handleEventWebSocket)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
@@ -415,6 +416,19 @@ func (s *Server) handleRefreshMissingMetadata(w http.ResponseWriter, r *http.Req
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		summary, err := s.store.RefreshMissingMetadata(progress)
+		if err != nil {
+			return "", err
+		}
+		return summary.RequestID, nil
+	})
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) handleDeduplicateDuplicates(w http.ResponseWriter, r *http.Request) {
+	job := s.startJob("duplicate_deduplication", func(progress ProgressFunc) (string, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		summary, err := s.store.VerifyAndDeduplicate(progress)
 		if err != nil {
 			return "", err
 		}

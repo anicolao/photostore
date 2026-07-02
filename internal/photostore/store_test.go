@@ -138,6 +138,71 @@ func TestScanSourcesReportsDuplicateGarbage(t *testing.T) {
 	}
 }
 
+func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	content := []byte("same")
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), content)
+	mustWrite(t, filepath.Join(sourcePath, "B.jpeg"), content)
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSources(nil); err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.RetainedDuplicateBytes != int64(len(content)) {
+		t.Fatalf("retained duplicate bytes before dedup = %d, want %d", before.RetainedDuplicateBytes, len(content))
+	}
+	duplicatePath := retainedDuplicatePath(t, st)
+	summary, err := st.VerifyAndDeduplicate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Candidates != 1 || summary.Deduplicated != 1 || summary.BytesReleased != int64(len(content)) {
+		t.Fatalf("deduplicate summary = %#v, want one released duplicate", summary)
+	}
+	after, err := st.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RetainedDuplicateBytes != 0 {
+		t.Fatalf("retained duplicate bytes after dedup = %d, want 0", after.RetainedDuplicateBytes)
+	}
+	got, err := os.ReadFile(duplicatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("deduplicated object bytes = %q, want %q", got, content)
+	}
+	var retained int
+	if err := st.DB.QueryRow(`select count(*) from source_content_links where acquired_object_retained = 1 and cas_existed_at_ingest = 1`).Scan(&retained); err != nil {
+		t.Fatal(err)
+	}
+	if retained != 0 {
+		t.Fatalf("retained duplicate links = %d, want 0", retained)
+	}
+	var events int
+	if err := st.DB.QueryRow(`select count(*) from events_applied where event_type = 'DuplicateSourceObjectDeduplicated'`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events != 1 {
+		t.Fatalf("dedup events = %d, want 1", events)
+	}
+}
+
 func TestOpenUninitializedStoreReturnsActionableError(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing-store")
 	_, err := Open(root)
@@ -151,6 +216,20 @@ func TestOpenUninitializedStoreReturnsActionableError(t *testing.T) {
 	if !strings.Contains(got, "--store PATH") {
 		t.Fatalf("error = %q, want alternate store guidance", got)
 	}
+}
+
+func retainedDuplicatePath(t *testing.T, st *Store) string {
+	t.Helper()
+	var key string
+	if err := st.DB.QueryRow(`
+		select st.acquired_storage_key
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		where scl.cas_existed_at_ingest = 1 and scl.acquired_object_retained = 1
+		limit 1`).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(st.Root, filepath.FromSlash(key))
 }
 
 func mustMkdir(t *testing.T, path string) {
