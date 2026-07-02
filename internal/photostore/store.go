@@ -91,6 +91,7 @@ func Init(root string) (*Store, error) {
 		filepath.Join(abs, "events"),
 		filepath.Join(abs, "objects", "acquired"),
 		filepath.Join(abs, "cas", "sha256", "v1"),
+		filepath.Join(abs, "thumbnails", "jpeg", "240"),
 		filepath.Join(abs, "tmp"),
 		filepath.Join(abs, "reports"),
 	} {
@@ -127,6 +128,9 @@ func Open(root string) (*Store, error) {
 		return nil, err
 	}
 	if err := requireInitialized(abs); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(abs, "thumbnails", "jpeg", "240"), 0o755); err != nil {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", filepath.Join(abs, "projections.sqlite3"))

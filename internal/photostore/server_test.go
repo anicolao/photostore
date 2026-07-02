@@ -3,6 +3,9 @@ package photostore
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,8 +19,9 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	storePath := filepath.Join(root, "store")
 	sourcePath := filepath.Join(root, "source")
 	mustMkdir(t, sourcePath)
-	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), []byte("one"))
-	mustWrite(t, filepath.Join(sourcePath, "B.jpeg"), []byte("one"))
+	jpegBytes := testJPEG(t)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), jpegBytes)
+	mustWrite(t, filepath.Join(sourcePath, "B.jpeg"), jpegBytes)
 
 	st, err := Init(storePath)
 	if err != nil {
@@ -59,6 +63,12 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if acquired[0].ViewURL == "" {
 		t.Fatalf("missing view url in acquired file: %#v", acquired[0])
 	}
+	if acquired[0].ThumbnailURL == "" {
+		t.Fatalf("missing thumbnail url in acquired file: %#v", acquired[0])
+	}
+	if acquired[0].Filename == "" {
+		t.Fatalf("missing filename in acquired file: %#v", acquired[0])
+	}
 	res, err := http.Get(ts.URL + acquired[0].ViewURL)
 	if err != nil {
 		t.Fatal(err)
@@ -70,6 +80,32 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if got := res.Header.Get("Content-Type"); got != "image/jpeg" {
 		t.Fatalf("content type = %q, want image/jpeg", got)
 	}
+	thumb, err := http.Get(ts.URL + acquired[0].ThumbnailURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer thumb.Body.Close()
+	if thumb.StatusCode != http.StatusOK {
+		t.Fatalf("thumbnail status = %d, want 200", thumb.StatusCode)
+	}
+	if got := thumb.Header.Get("Content-Type"); got != "image/jpeg" {
+		t.Fatalf("thumbnail content type = %q, want image/jpeg", got)
+	}
+	thumbPath, _, err := st.ThumbnailFile(acquired[0].StoredObjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(thumbPath); err != nil {
+		t.Fatal(err)
+	}
+	placeholder, err := http.Get(ts.URL + acquired[0].ThumbnailURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer placeholder.Body.Close()
+	if got := placeholder.Header.Get("Content-Type"); got != "image/svg+xml" {
+		t.Fatalf("placeholder content type = %q, want image/svg+xml", got)
+	}
 	var scans []ScanProjection
 	getJSON(t, ts.URL+"/api/scans", &scans)
 	if len(scans) != 1 || scans[0].ScanID != *done.ResultRef {
@@ -80,8 +116,8 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	}
 	var summary StoreSummary
 	getJSON(t, ts.URL+"/api/store", &summary)
-	if summary.RetainedDuplicateBytes != int64(len("one")) {
-		t.Fatalf("retained duplicate bytes = %d, want %d", summary.RetainedDuplicateBytes, len("one"))
+	if summary.RetainedDuplicateBytes != int64(len(jpegBytes)) {
+		t.Fatalf("retained duplicate bytes = %d, want %d", summary.RetainedDuplicateBytes, len(jpegBytes))
 	}
 	getJSON(t, ts.URL+"/api/sources", &sources)
 	if sources[0].LastScanID == nil || *sources[0].LastScanID != *done.ResultRef {
@@ -90,6 +126,21 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if sources[0].LastScanCompletedAtMS == nil {
 		t.Fatal("missing last scan completed timestamp")
 	}
+}
+
+func testJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 24, 18))
+	for y := 0; y < 18; y++ {
+		for x := 0; x < 24; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(80 + x*5), G: uint8(100 + y*6), B: 160, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
 }
 
 func TestServerCanScanSingleSourceRoot(t *testing.T) {

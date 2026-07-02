@@ -1,6 +1,6 @@
 # Test: Dashboard Source Scan
 
-Register a source root, scan it, inspect the compact progress log, and drill into acquired files.
+Register a source root, scan it, inspect the compact progress log, and drill into acquired photo thumbnails.
 
 ## The initialized store dashboard starts empty.
 
@@ -48,14 +48,17 @@ Register a source root, scan it, inspect the compact progress log, and drill int
 
 ---
 
-## The acquired count opens a file list with image links.
+## The acquired count opens a thumbnail grid with image links.
 
-![The acquired count opens a file list with image links.](./screenshots/004-acquired-files-drilldown.png)
+![The acquired count opens a thumbnail grid with image links.](./screenshots/004-acquired-files-drilldown.png)
 
 **Verifications:**
-- [x] Acquired files heading is visible
-- [x] Acquired table lists A.JPG
+- [x] Photos heading is visible
+- [x] Photo grid lists A.JPG by filename
+- [x] Photo grid does not show the absolute source path
+- [x] Generated thumbnails are visible
 - [x] First acquired file link serves image/jpeg
+- [x] First thumbnail serves image/jpeg
 
 ---
 

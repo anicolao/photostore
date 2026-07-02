@@ -42,9 +42,11 @@ export type AcquiredFile = {
   source_root_id?: string;
   path: string;
   relative_path: string;
+  filename: string;
   scan_id: string;
   content_ref: string;
   view_url: string;
+  thumbnail_url: string;
 };
 
 export type HistoricalInventory = {

@@ -67,6 +67,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/report", s.handleScanReport)
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/acquired", s.handleScanAcquiredFiles)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
+	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/thumbnail", s.handleStoredObjectThumbnail)
 	s.mux.HandleFunc("GET /api/inventories", s.handleInventories)
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
@@ -134,7 +135,12 @@ func (s *Server) handleStartSourceScan(w http.ResponseWriter, r *http.Request) {
 	job := s.startJob("source_scan", func(progress ProgressFunc) (string, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.store.ScanSources(progress)
+		scanID, err := s.store.ScanSources(progress)
+		if err != nil {
+			return "", err
+		}
+		s.store.EnsureThumbnailsForScan(scanID, progress)
+		return scanID, nil
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }
@@ -144,7 +150,12 @@ func (s *Server) handleStartSingleSourceScan(w http.ResponseWriter, r *http.Requ
 	job := s.startJob("source_scan", func(progress ProgressFunc) (string, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.store.ScanSourceRoots([]string{sourceRootID}, progress)
+		scanID, err := s.store.ScanSourceRoots([]string{sourceRootID}, progress)
+		if err != nil {
+			return "", err
+		}
+		s.store.EnsureThumbnailsForScan(scanID, progress)
+		return scanID, nil
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }
@@ -176,6 +187,28 @@ func (s *Server) handleStoredObjectBytes(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", contentTypeForPath(file.OriginalPath))
 	w.Header().Set("Content-Disposition", "inline")
 	http.ServeFile(w, r, file.Path)
+}
+
+func (s *Server) handleStoredObjectThumbnail(w http.ResponseWriter, r *http.Request) {
+	storedObjectID := r.PathValue("stored_object_id")
+	if _, err := s.store.StoredObjectFile(storedObjectID); err != nil {
+		writeErrorStatus(w, http.StatusNotFound, err)
+		return
+	}
+	path, ok, err := s.store.ThumbnailFile(storedObjectID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !ok {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(thumbnailPlaceholderSVG))
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Content-Disposition", "inline")
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) handleInventories(w http.ResponseWriter, r *http.Request) {
@@ -226,7 +259,12 @@ func (s *Server) handleScanInventory(w http.ResponseWriter, r *http.Request) {
 	job := s.startJob("inventory_scan", func(progress ProgressFunc) (string, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.store.ScanInventoryWithProgress(invID, req.Type, req.Extensions, req.ResolverRoot, req.StripPrefixes, req.CaseSensitive, progress)
+		scanID, err := s.store.ScanInventoryWithProgress(invID, req.Type, req.Extensions, req.ResolverRoot, req.StripPrefixes, req.CaseSensitive, progress)
+		if err != nil {
+			return "", err
+		}
+		s.store.EnsureThumbnailsForScan(scanID, progress)
+		return scanID, nil
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }

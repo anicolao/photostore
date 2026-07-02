@@ -9,6 +9,7 @@ The MVP is intentionally narrow:
 - It hashes bytes while copying them into Photostore.
 - It stores retained acquired objects under `objects/acquired/`.
 - It materializes newly seen content under `cas/sha256/v1/`.
+- It stores generated JPEG thumbnails under `thumbnails/jpeg/240/`.
 - It records append-only JSONL events under `events/events.jsonl`.
 - It maintains rebuildable SQLite projections in `projections.sqlite3`.
 - It can acquire historical `.toc`-style inventory files and use their trusted hashes to skip duplicate byte acquisition.
@@ -54,6 +55,7 @@ photostore-data/
   events/events.jsonl
   objects/acquired/
   cas/sha256/v1/
+  thumbnails/jpeg/240/
   tmp/
   projections.sqlite3
   reports/
@@ -147,6 +149,9 @@ go run ./cmd/photostore serve --store ./photostore-data
 
 Then open `http://127.0.0.1:8080`. The server binds to loopback by default and
 refuses public addresses unless `--allow-public-bind` is passed explicitly.
+Completed scans generate thumbnails for acquired JPEGs. The scan drilldown view
+uses those thumbnails when available and shows a placeholder for photos whose
+thumbnail has not been generated yet.
 
 For frontend development:
 
