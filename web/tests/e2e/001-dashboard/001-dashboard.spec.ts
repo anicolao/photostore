@@ -20,9 +20,11 @@ test('dashboard loads and scans a source root', async ({ page }) => {
   await page.getByRole('button', { name: 'Add' }).click();
   await expect(page.getByTestId('source-count')).toHaveText('1');
   await expect(page.getByTestId('source-list')).toContainText('fixture');
+  await expect(page.getByTestId('source-list')).toContainText('Last scan: Never');
 
-  await page.getByTestId('start-source-scan').click();
+  await page.getByTestId('source-list').getByRole('button', { name: 'Scan' }).click();
   await expect(page.getByTestId('job-status')).toContainText('completed', { timeout: 10_000 });
+  await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never');
   await expect(page.getByTestId('scan-table')).toContainText('completed');
   await expect(page.getByTestId('scan-table')).toContainText('2');
   await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('4');

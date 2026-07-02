@@ -61,6 +61,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/store", s.handleStore)
 	s.mux.HandleFunc("GET /api/sources", s.handleSources)
 	s.mux.HandleFunc("POST /api/sources", s.handleAddSource)
+	s.mux.HandleFunc("POST /api/sources/{source_root_id}/scan", s.handleStartSingleSourceScan)
 	s.mux.HandleFunc("GET /api/scans", s.handleScans)
 	s.mux.HandleFunc("POST /api/scans", s.handleStartSourceScan)
 	s.mux.HandleFunc("GET /api/scans/{scan_id}/report", s.handleScanReport)
@@ -132,6 +133,16 @@ func (s *Server) handleStartSourceScan(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		return s.store.ScanSources(progress)
+	})
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) handleStartSingleSourceScan(w http.ResponseWriter, r *http.Request) {
+	sourceRootID := r.PathValue("source_root_id")
+	job := s.startJob("source_scan", func(progress ProgressFunc) (string, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.store.ScanSourceRoots([]string{sourceRootID}, progress)
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }

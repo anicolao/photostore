@@ -41,6 +41,13 @@ export function startSourceScan(): Promise<Job> {
   });
 }
 
+export function startSingleSourceScan(sourceRootID: string): Promise<Job> {
+  return request(`/api/sources/${sourceRootID}/scan`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function getJob(jobID: string): Promise<Job> {
   return request(`/api/jobs/${jobID}`);
 }

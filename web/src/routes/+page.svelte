@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { addSource, getInventories, getJob, getScans, getSources, getStore, startSourceScan } from '$lib/api';
+  import { onDestroy, onMount } from 'svelte';
+  import { addSource, getInventories, getJob, getScans, getSources, getStore, startSingleSourceScan, startSourceScan } from '$lib/api';
   import type { HistoricalInventory, Job, ScanProjection, SourceRoot, StoreSummary } from '$lib/types';
 
   let store: StoreSummary | null = null;
@@ -11,14 +12,21 @@
   let sourceLabel = '';
   let error = '';
   let loading = true;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
-  async function refresh() {
+  async function refresh(showLoading = false) {
+    if (showLoading) {
+      loading = true;
+    }
     [store, sources, scans, inventories] = await Promise.all([
       getStore(),
       getSources(),
       getScans(),
       getInventories()
     ]);
+    if (showLoading) {
+      loading = false;
+    }
   }
 
   async function load() {
@@ -41,10 +49,10 @@
     await refresh();
   }
 
-  async function scanSources() {
+  async function runScan(start: () => Promise<Job>) {
     error = '';
     try {
-      activeJob = await startSourceScan();
+      activeJob = await start();
       while (activeJob.status === 'running') {
         await sleep(150);
         activeJob = await getJob(activeJob.job_id);
@@ -59,6 +67,14 @@
     } catch (err) {
       error = String(err);
     }
+  }
+
+  async function scanSources() {
+    await runScan(startSourceScan);
+  }
+
+  async function scanSource(sourceRootID: string) {
+    await runScan(() => startSingleSourceScan(sourceRootID));
   }
 
   function sleep(ms: number) {
@@ -83,7 +99,32 @@
     return formatBytes(value);
   }
 
-  load();
+  function formatScanTime(value: number | null | undefined) {
+    if (value === null || value === undefined) {
+      return 'Never';
+    }
+    return new Intl.DateTimeFormat('en-CA', {
+      dateStyle: 'medium',
+      timeStyle: 'short'
+    }).format(new Date(value));
+  }
+
+  onMount(() => {
+    load();
+    refreshTimer = setInterval(() => {
+      if (activeJob?.status !== 'running') {
+        refresh().catch((err) => {
+          error = String(err);
+        });
+      }
+    }, 3000);
+  });
+
+  onDestroy(() => {
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+    }
+  });
 </script>
 
 <svelte:head>
@@ -96,7 +137,7 @@
       <h1>Photostore</h1>
       <p data-testid="store-path">{store?.store_path ?? 'Loading store'}</p>
     </div>
-    <button on:click={refresh} disabled={loading}>Refresh</button>
+    <button on:click={() => refresh(true)} disabled={loading}>Refresh</button>
   </header>
 
   {#if error}
@@ -141,8 +182,14 @@
         <ul class="rows" data-testid="source-list">
           {#each sources as source}
             <li>
-              <strong>{source.label}</strong>
-              <code>{source.path}</code>
+              <div>
+                <strong>{source.label}</strong>
+                <code>{source.path}</code>
+                <span>Last scan: {formatScanTime(source.last_scan_completed_at_ms)}</span>
+              </div>
+              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={activeJob?.status === 'running'}>
+                Scan
+              </button>
             </li>
           {/each}
         </ul>
@@ -298,10 +345,23 @@
   }
 
   .rows li {
-    display: grid;
-    gap: 3px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
     border-top: 1px solid #eef1f5;
     padding: 9px 0;
+  }
+
+  .rows li div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .rows span {
+    color: #5f6368;
+    font-size: 12px;
   }
 
   .empty {

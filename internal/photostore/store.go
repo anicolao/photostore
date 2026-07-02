@@ -41,9 +41,11 @@ type Event struct {
 }
 
 type SourceRoot struct {
-	ID    string `json:"source_root_id"`
-	Path  string `json:"path"`
-	Label string `json:"label"`
+	ID                    string  `json:"source_root_id"`
+	Path                  string  `json:"path"`
+	Label                 string  `json:"label"`
+	LastScanID            *string `json:"last_scan_id"`
+	LastScanCompletedAtMS *int64  `json:"last_scan_completed_at_ms"`
 }
 
 type ScanReport struct {
@@ -238,10 +240,20 @@ func (s *Store) AcquireInventory(path, label, group string) (string, error) {
 }
 
 func (s *Store) ScanSources(progress ProgressFunc) (string, error) {
+	return s.ScanSourceRoots(nil, progress)
+}
+
+func (s *Store) ScanSourceRoots(sourceRootIDs []string, progress ProgressFunc) (string, error) {
 	scanID := newID("scan")
 	roots, err := s.sourceRoots()
 	if err != nil {
 		return "", err
+	}
+	if len(sourceRootIDs) > 0 {
+		roots, err = filterSourceRoots(roots, sourceRootIDs)
+		if err != nil {
+			return "", err
+		}
 	}
 	rootIDs := make([]string, 0, len(roots))
 	for _, r := range roots {
@@ -486,6 +498,7 @@ func (s *Store) initSchema() error {
 		`create table if not exists verified_hashes(stored_object_id text, algorithm text, verifier_version integer, hash text, size integer, content_ref text, verified_event_id text)`,
 		`create table if not exists content_addresses(content_ref text primary key, algorithm text, hash text, size integer, derived_cas_storage_key text, first_materialized_event_id text)`,
 		`create table if not exists source_occurrences(source_occurrence_id text primary key, stored_object_id text, source_kind text, source_root_id text, path text, relative_path text, scan_id text, historical_inventory_id text, inventory_entry_id text, source_event_id text)`,
+		`create table if not exists source_root_scans(source_root_id text, scan_id text, requested_event_id text, primary key(source_root_id, scan_id))`,
 		`create table if not exists historical_inventories(historical_inventory_id text primary key, stored_object_id text, original_path text, label text, group_name text, acquired_event_id text, acquired_storage_key text)`,
 		`create table if not exists historical_inventory_scans(scan_id text primary key, historical_inventory_id text, inventory_type text, parser_json text, filter_json text, path_resolver_json text, requested_event_id text)`,
 		`create table if not exists historical_inventory_entries(inventory_entry_id text primary key, scan_id text, historical_inventory_id text, sha256 text, size integer, historical_path text, resolved_path text, extension text, raw_line text)`,
@@ -561,6 +574,12 @@ func (s *Store) applyEvent(ev Event) error {
 	switch ev.EventType {
 	case "SourceRootRegistered":
 		_, err = tx.Exec(`insert or ignore into source_roots values(?,?,?,?,?)`, str(ev.Payload["source_root_id"]), str(ev.Payload["root_path"]), str(ev.Payload["label"]), str(ev.Payload["source_type"]), pj("scan_policy"))
+	case "SourceRootScanRequested":
+		for _, sourceRootID := range stringSlice(ev.Payload["source_root_ids"]) {
+			if _, err = tx.Exec(`insert or ignore into source_root_scans(source_root_id,scan_id,requested_event_id) values(?,?,?)`, sourceRootID, str(ev.Payload["scan_id"]), ev.EventID); err != nil {
+				break
+			}
+		}
 	case "HistoricalInventoryFileAcquired":
 		_, err = tx.Exec(`insert or ignore into stored_objects values(?,?,?,?,?)`, str(ev.Payload["stored_object_id"]), str(ev.Payload["purpose"]), str(ev.Payload["acquired_storage_key"]), str(ev.Payload["original_path"]), ev.EventID)
 		if err == nil {
@@ -697,7 +716,69 @@ func (s *Store) sourceRoots() ([]SourceRoot, error) {
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		var scanID sql.NullString
+		var completed sql.NullInt64
+		err := s.DB.QueryRow(`
+			select scan_id, completed_at_ms
+			from (
+				select srs.scan_id, sc.completed_at_ms
+				from source_root_scans srs
+				join scans sc on sc.scan_id = srs.scan_id
+				where srs.source_root_id = ? and sc.completed_at_ms is not null
+				union
+				select so.scan_id, sc.completed_at_ms
+				from source_occurrences so
+				join scans sc on sc.scan_id = so.scan_id
+				where so.source_root_id = ? and sc.completed_at_ms is not null
+			)
+			order by completed_at_ms desc
+			limit 1`, out[i].ID, out[i].ID).Scan(&scanID, &completed)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		if scanID.Valid {
+			out[i].LastScanID = &scanID.String
+		}
+		if completed.Valid {
+			out[i].LastScanCompletedAtMS = &completed.Int64
+		}
+	}
+	return out, nil
+}
+
+func filterSourceRoots(roots []SourceRoot, ids []string) ([]SourceRoot, error) {
+	wanted := map[string]bool{}
+	for _, id := range ids {
+		if id != "" {
+			wanted[id] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return roots, nil
+	}
+	out := make([]SourceRoot, 0, len(wanted))
+	for _, root := range roots {
+		if wanted[root.ID] {
+			out = append(out, root)
+			delete(wanted, root.ID)
+		}
+	}
+	if len(wanted) > 0 {
+		missing := make([]string, 0, len(wanted))
+		for id := range wanted {
+			missing = append(missing, id)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("unknown source root id: %s", strings.Join(missing, ", "))
+	}
+	return out, nil
 }
 
 type inventoryProjection struct {
@@ -1039,4 +1120,21 @@ func mapValue(v any) map[string]any {
 		return m
 	}
 	return map[string]any{}
+}
+
+func stringSlice(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s := str(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
