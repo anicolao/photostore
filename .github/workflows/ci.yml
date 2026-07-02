@@ -10,11 +10,11 @@ name: CI
 jobs:
   test:
     name: Go and E2E Tests
-    runs-on: macos-latest
+    runs-on: macos-15
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
