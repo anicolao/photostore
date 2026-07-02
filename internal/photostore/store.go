@@ -1,0 +1,992 @@
+package photostore
+
+import (
+	"bufio"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	_ "modernc.org/sqlite"
+)
+
+const schemaVersion = 1
+
+type Store struct {
+	Root string
+	DB   *sql.DB
+}
+
+type Event struct {
+	EventID       string         `json:"event_id"`
+	EventType     string         `json:"event_type"`
+	SchemaVersion int            `json:"schema_version"`
+	RecordedAtMS  int64          `json:"recorded_at_ms"`
+	Actor         map[string]any `json:"actor"`
+	CausationID   *string        `json:"causation_id"`
+	CorrelationID *string        `json:"correlation_id"`
+	Payload       map[string]any `json:"payload"`
+}
+
+type SourceRoot struct {
+	ID    string
+	Path  string
+	Label string
+}
+
+type ScanReport struct {
+	ScanID                       string `json:"scan_id"`
+	SourceRootsScanned           int    `json:"source_roots_scanned"`
+	DirectoriesSeen              int    `json:"directories_seen"`
+	RegularFilesSeen             int    `json:"regular_files_seen"`
+	CandidateFilesSeen           int    `json:"candidate_files_seen"`
+	SourceFilesAcquired          int    `json:"source_files_acquired"`
+	SourceFileAcquireFailures    int    `json:"source_file_acquire_failures"`
+	ContentAddressesMaterialized int    `json:"content_addresses_materialized"`
+	NonCandidateFilesSkipped     int    `json:"non_candidate_files_skipped"`
+	HistoricalJPEGEntriesLoaded  int    `json:"historical_jpeg_entries_loaded"`
+	HistoricalEntriesAlreadySeen int    `json:"historical_entries_already_seen"`
+	HistoricalEntriesResolved    int    `json:"historical_entries_resolved"`
+	HistoricalEntriesUnresolved  int    `json:"historical_entries_unresolved"`
+}
+
+type inventoryEntry struct {
+	ID             string
+	SHA256         string
+	Size           *int64
+	HistoricalPath string
+	ResolvedPath   string
+	Extension      string
+	RawLine        string
+}
+
+func Init(root string) (*Store, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range []string{
+		filepath.Join(abs, "events"),
+		filepath.Join(abs, "objects", "acquired"),
+		filepath.Join(abs, "cas", "sha256", "v1"),
+		filepath.Join(abs, "tmp"),
+		filepath.Join(abs, "reports"),
+	} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	st, err := Open(abs)
+	if err != nil {
+		return nil, err
+	}
+	if err := st.appendEvent("StoreInitialized", nil, nil, map[string]any{
+		"store_path":                abs,
+		"event_log_path":            filepath.Join(abs, "events", "events.jsonl"),
+		"acquired_object_root_path": filepath.Join(abs, "objects", "acquired"),
+		"cas_root_path":             filepath.Join(abs, "cas"),
+		"projection_path":           filepath.Join(abs, "projections.sqlite3"),
+		"implementation": map[string]any{
+			"name":           "photostore",
+			"language":       "go",
+			"mvp_plan":       "MVP_IMPLEMENTATION_PLAN.md",
+			"schema_version": schemaVersion,
+		},
+	}); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+func Open(root string) (*Store, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", filepath.Join(abs, "projections.sqlite3"))
+	if err != nil {
+		return nil, err
+	}
+	st := &Store{Root: abs, DB: db}
+	if err := st.initSchema(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+func (s *Store) Close() error {
+	if s.DB == nil {
+		return nil
+	}
+	return s.DB.Close()
+}
+
+func (s *Store) AddSourceRoot(path, label string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if label == "" {
+		label = filepath.Base(abs)
+	}
+	var existing string
+	err = s.DB.QueryRow(`select source_root_id from source_roots where root_path = ?`, abs).Scan(&existing)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	id := newID("src")
+	return id, s.appendEvent("SourceRootRegistered", nil, nil, map[string]any{
+		"source_root_id": id,
+		"label":          label,
+		"root_path":      abs,
+		"source_type":    "local_directory",
+		"scan_policy": map[string]any{
+			"recursive":            true,
+			"follow_symlinks":      false,
+			"candidate_extensions": []string{".jpg", ".jpeg"},
+		},
+	})
+}
+
+func (s *Store) AcquireInventory(path, label, group string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	invID := newID("inv")
+	objID := newID("obj")
+	key := filepath.Join("objects", "acquired", objID)
+	dest := filepath.Join(s.Root, key)
+	result, err := copyHash(abs, dest)
+	if err != nil {
+		_ = s.appendEvent("HistoricalInventoryFileAcquireFailed", nil, nil, map[string]any{
+			"purpose":       "historical_inventory",
+			"original_path": abs,
+			"error":         errPayload(err, true),
+		})
+		return "", err
+	}
+	contentRef := contentRef(result.Hash, result.Size)
+	if err := s.appendEvent("HistoricalInventoryFileAcquired", nil, nil, map[string]any{
+		"historical_inventory_id": invID,
+		"stored_object_id":        objID,
+		"purpose":                 "historical_inventory",
+		"original_path":           abs,
+		"label":                   label,
+		"group":                   group,
+		"acquired_storage_key":    filepath.ToSlash(key),
+		"source_file":             statPayload(abs),
+		"copy_result": map[string]any{
+			"bytes_copied":   result.Size,
+			"hash_algorithm": "sha256",
+			"hash":           result.Hash,
+			"content_ref":    contentRef,
+		},
+	}); err != nil {
+		return "", err
+	}
+	if !s.contentAddressExists(contentRef) {
+		if err := s.materialize(objID, filepath.ToSlash(key), contentRef); err != nil {
+			return "", err
+		}
+	}
+	return invID, nil
+}
+
+func (s *Store) ScanSources() (string, error) {
+	scanID := newID("scan")
+	roots, err := s.sourceRoots()
+	if err != nil {
+		return "", err
+	}
+	rootIDs := make([]string, 0, len(roots))
+	for _, r := range roots {
+		rootIDs = append(rootIDs, r.ID)
+	}
+	if err := s.appendEvent("SourceRootScanRequested", nil, &scanID, map[string]any{
+		"scan_id":              scanID,
+		"source_root_ids":      rootIDs,
+		"candidate_extensions": []string{".jpg", ".jpeg"},
+		"requested_by":         "cli",
+	}); err != nil {
+		return "", err
+	}
+	if err := s.appendEvent("IngestionScanStarted", nil, &scanID, map[string]any{
+		"scan_id":       scanID,
+		"started_at_ms": nowMS(),
+		"source_roots":  rootPayloads(roots),
+		"policy": map[string]any{
+			"recursive":            true,
+			"follow_symlinks":      false,
+			"candidate_extensions": []string{".jpg", ".jpeg"},
+		},
+	}); err != nil {
+		return "", err
+	}
+	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
+	for _, root := range roots {
+		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if d.IsDir() {
+				report.DirectoriesSeen++
+				return nil
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			report.RegularFilesSeen++
+			if !isJPEG(path) {
+				report.NonCandidateFilesSkipped++
+				return nil
+			}
+			report.CandidateFilesSeen++
+			rel, _ := filepath.Rel(root.Path, path)
+			entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
+				"scan_id":                 scanID,
+				"source_root_id":          root.ID,
+				"source_kind":             "source_root",
+				"path":                    path,
+				"relative_path":           filepath.ToSlash(rel),
+				"historical_inventory_id": nil,
+				"inventory_entry_id":      nil,
+				"entry_type":              "regular_file",
+				"filesystem":              statPayload(path),
+				"candidate_reason": map[string]any{
+					"method":    "extension",
+					"extension": strings.ToLower(filepath.Ext(path)),
+				},
+			})
+			if err != nil {
+				return err
+			}
+			if err := s.acquireSourceFile(scanID, &entryID, root.ID, "source_root", path, filepath.ToSlash(rel), "", "", report); err != nil {
+				report.SourceFileAcquireFailures++
+			}
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := s.writeReport(report); err != nil {
+		return "", err
+	}
+	if err := s.appendEvent("IngestionScanCompleted", nil, &scanID, map[string]any{
+		"scan_id":         scanID,
+		"completed_at_ms": nowMS(),
+		"status":          "completed",
+		"stats": map[string]any{
+			"source_roots_scanned":           report.SourceRootsScanned,
+			"directories_seen":               report.DirectoriesSeen,
+			"regular_files_seen":             report.RegularFilesSeen,
+			"candidate_files_seen":           report.CandidateFilesSeen,
+			"source_files_acquired":          report.SourceFilesAcquired,
+			"source_file_acquire_failures":   report.SourceFileAcquireFailures,
+			"content_addresses_materialized": report.ContentAddressesMaterialized,
+			"non_candidate_files_skipped":    report.NonCandidateFilesSkipped,
+		},
+		"report_paths": map[string]any{
+			"json": filepath.Join(s.Root, "reports", "scan-"+scanID+".json"),
+			"text": filepath.Join(s.Root, "reports", "scan-"+scanID+".txt"),
+		},
+	}); err != nil {
+		return "", err
+	}
+	return scanID, nil
+}
+
+func (s *Store) ScanInventory(invID, invType string, exts []string, resolverRoot string, stripPrefixes []string, caseSensitive bool) (string, error) {
+	scanID := newID("scan")
+	inv, err := s.inventory(invID)
+	if err != nil {
+		return "", err
+	}
+	if invType == "" {
+		invType = "toc"
+	}
+	if len(exts) == 0 {
+		exts = []string{".jpg", ".jpeg"}
+	}
+	if len(stripPrefixes) == 0 {
+		stripPrefixes = []string{"./"}
+	}
+	if err := s.appendEvent("HistoricalInventoryScanRequested", nil, &scanID, map[string]any{
+		"scan_id":                 scanID,
+		"historical_inventory_id": inv.ID,
+		"label":                   inv.Label,
+		"group":                   inv.Group,
+		"inventory_type":          invType,
+		"original_path":           inv.OriginalPath,
+		"stored_object_id":        inv.StoredObjectID,
+		"parser": map[string]any{
+			"name":    "hash_keyed_text",
+			"version": 1,
+		},
+		"filter": map[string]any{
+			"candidate_extensions":      exts,
+			"hash_only_entries_allowed": false,
+		},
+		"path_resolver": map[string]any{
+			"type":           "root_relative",
+			"resolver_root":  resolverRoot,
+			"strip_prefixes": stripPrefixes,
+			"case_sensitive": caseSensitive,
+		},
+		"requested_by": "cli",
+	}); err != nil {
+		return "", err
+	}
+	entries, err := parseInventory(filepath.Join(s.Root, inv.AcquiredStorageKey), inv.ID, scanID, exts)
+	if err != nil {
+		return "", err
+	}
+	report := &ScanReport{ScanID: scanID, HistoricalJPEGEntriesLoaded: len(entries)}
+	for _, ent := range entries {
+		ent.ResolvedPath = resolveHistoricalPath(resolverRoot, ent.HistoricalPath, stripPrefixes)
+		if err := s.upsertInventoryEntry(scanID, inv.ID, ent); err != nil {
+			return "", err
+		}
+		content, seen, err := s.seenContent(ent.SHA256, ent.Size)
+		if err != nil {
+			return "", err
+		}
+		if seen {
+			report.HistoricalEntriesAlreadySeen++
+			if err := s.appendEvent("HistoricalInventoryOccurrenceLinked", nil, &scanID, map[string]any{
+				"scan_id":                 scanID,
+				"source_occurrence_id":    newID("occ"),
+				"historical_inventory_id": inv.ID,
+				"inventory_entry_id":      ent.ID,
+				"content_ref":             content,
+				"link_basis": map[string]any{
+					"type":           "trusted_historical_inventory_hash",
+					"inventory_type": invType,
+					"parser": map[string]any{
+						"name":    "hash_keyed_text",
+						"version": 1,
+					},
+				},
+			}); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if ent.ResolvedPath == "" {
+			report.HistoricalEntriesUnresolved++
+			continue
+		}
+		if _, err := os.Stat(ent.ResolvedPath); err != nil {
+			report.HistoricalEntriesUnresolved++
+			continue
+		}
+		report.HistoricalEntriesResolved++
+		entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
+			"scan_id":                 scanID,
+			"source_root_id":          nil,
+			"source_kind":             "historical_inventory_resolved_path",
+			"path":                    ent.ResolvedPath,
+			"relative_path":           filepath.ToSlash(ent.HistoricalPath),
+			"historical_inventory_id": inv.ID,
+			"inventory_entry_id":      ent.ID,
+			"entry_type":              "regular_file",
+			"filesystem":              statPayload(ent.ResolvedPath),
+			"candidate_reason": map[string]any{
+				"method":    "historical_inventory_extension",
+				"extension": ent.Extension,
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+		if err := s.acquireSourceFile(scanID, &entryID, "", "historical_inventory_resolved_path", ent.ResolvedPath, filepath.ToSlash(ent.HistoricalPath), inv.ID, ent.ID, report); err != nil {
+			report.SourceFileAcquireFailures++
+		}
+	}
+	if err := s.writeReport(report); err != nil {
+		return "", err
+	}
+	return scanID, nil
+}
+
+func (s *Store) Report(scanID string) (*ScanReport, error) {
+	b, err := os.ReadFile(filepath.Join(s.Root, "reports", "scan-"+scanID+".json"))
+	if err != nil {
+		return nil, err
+	}
+	var r ScanReport
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+func (s *Store) initSchema() error {
+	stmts := []string{
+		`create table if not exists events_applied(event_id text primary key, event_type text, recorded_at_ms integer)`,
+		`create table if not exists source_roots(source_root_id text primary key, root_path text unique, label text, source_type text, policy_json text)`,
+		`create table if not exists stored_objects(stored_object_id text primary key, purpose text, acquired_storage_key text, original_path text, first_event_id text)`,
+		`create table if not exists source_content_links(source_occurrence_id text primary key, stored_object_id text, content_ref text, cas_existed_at_ingest integer, acquired_object_retained integer, link_event_id text)`,
+		`create table if not exists verified_hashes(stored_object_id text, algorithm text, verifier_version integer, hash text, size integer, content_ref text, verified_event_id text)`,
+		`create table if not exists content_addresses(content_ref text primary key, algorithm text, hash text, size integer, derived_cas_storage_key text, first_materialized_event_id text)`,
+		`create table if not exists source_occurrences(source_occurrence_id text primary key, stored_object_id text, source_kind text, source_root_id text, path text, relative_path text, scan_id text, historical_inventory_id text, inventory_entry_id text, source_event_id text)`,
+		`create table if not exists historical_inventories(historical_inventory_id text primary key, stored_object_id text, original_path text, label text, group_name text, acquired_event_id text, acquired_storage_key text)`,
+		`create table if not exists historical_inventory_scans(scan_id text primary key, historical_inventory_id text, inventory_type text, parser_json text, filter_json text, path_resolver_json text, requested_event_id text)`,
+		`create table if not exists historical_inventory_entries(inventory_entry_id text primary key, scan_id text, historical_inventory_id text, sha256 text, size integer, historical_path text, resolved_path text, extension text, raw_line text)`,
+		`create table if not exists historical_matches(content_ref text, stored_object_id text, historical_inventory_id text, inventory_entry_id text)`,
+		`create table if not exists historical_seen_links(source_occurrence_id text primary key, historical_inventory_id text, inventory_entry_id text, content_ref text, link_event_id text)`,
+		`create table if not exists asset_projection(asset_projection_id text primary key, content_ref text unique, representative_stored_object_id text, asset_kind text)`,
+		`create table if not exists scans(scan_id text primary key, status text, started_at_ms integer, completed_at_ms integer, stats_json text)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.DB.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) appendEvent(eventType string, causationID *string, correlationID *string, payload map[string]any) error {
+	_, err := s.appendEventReturnID(eventType, causationID, correlationID, payload)
+	return err
+}
+
+func (s *Store) appendEventReturnID(eventType string, causationID *string, correlationID *string, payload map[string]any) (string, error) {
+	ev := Event{
+		EventID:       newID("evt"),
+		EventType:     eventType,
+		SchemaVersion: schemaVersion,
+		RecordedAtMS:  nowMS(),
+		Actor: map[string]any{
+			"type": "process",
+			"id":   "photostore-cli",
+			"pid":  os.Getpid(),
+		},
+		CausationID:   causationID,
+		CorrelationID: correlationID,
+		Payload:       payload,
+	}
+	if err := s.writeEvent(ev); err != nil {
+		return "", err
+	}
+	if err := s.applyEvent(ev); err != nil {
+		return "", err
+	}
+	return ev.EventID, nil
+}
+
+func (s *Store) writeEvent(ev Event) error {
+	path := filepath.Join(s.Root, "events", "events.jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+func (s *Store) applyEvent(ev Event) error {
+	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`insert or ignore into events_applied(event_id,event_type,recorded_at_ms) values(?,?,?)`, ev.EventID, ev.EventType, ev.RecordedAtMS); err != nil {
+		return err
+	}
+	switch ev.EventType {
+	case "SourceRootRegistered":
+		_, err = tx.Exec(`insert or ignore into source_roots values(?,?,?,?,?)`, str(ev.Payload["source_root_id"]), str(ev.Payload["root_path"]), str(ev.Payload["label"]), str(ev.Payload["source_type"]), pj("scan_policy"))
+	case "HistoricalInventoryFileAcquired":
+		_, err = tx.Exec(`insert or ignore into stored_objects values(?,?,?,?,?)`, str(ev.Payload["stored_object_id"]), str(ev.Payload["purpose"]), str(ev.Payload["acquired_storage_key"]), str(ev.Payload["original_path"]), ev.EventID)
+		if err == nil {
+			_, err = tx.Exec(`insert or ignore into historical_inventories values(?,?,?,?,?,?,?)`, str(ev.Payload["historical_inventory_id"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["original_path"]), str(ev.Payload["label"]), str(ev.Payload["group"]), ev.EventID, str(ev.Payload["acquired_storage_key"]))
+		}
+	case "SourceFileAcquired":
+		occ := str(ev.Payload["source_occurrence_id"])
+		stored := nullableString(ev.Payload["stored_object_id"])
+		_, err = tx.Exec(`insert or ignore into source_occurrences values(?,?,?,?,?,?,?,?,?,?)`, occ, stored, str(ev.Payload["source_kind"]), nullableString(ev.Payload["source_root_id"]), str(ev.Payload["path"]), str(ev.Payload["relative_path"]), str(ev.Payload["scan_id"]), nullableString(ev.Payload["historical_inventory_id"]), nullableString(ev.Payload["inventory_entry_id"]), ev.EventID)
+		if err == nil && stored.Valid {
+			_, err = tx.Exec(`insert or ignore into stored_objects values(?,?,?,?,?)`, stored.String, str(ev.Payload["purpose"]), str(ev.Payload["acquired_storage_key"]), str(ev.Payload["path"]), ev.EventID)
+		}
+		if err == nil {
+			disp := mapValue(ev.Payload["storage_disposition"])
+			_, err = tx.Exec(`insert or ignore into source_content_links values(?,?,?,?,?,?)`, occ, stored, str(ev.Payload["content_ref"]), boolInt(disp["cas_existed_at_ingest"]), boolInt(disp["acquired_object_retained"]), ev.EventID)
+		}
+	case "ContentAddressMaterialized":
+		ref := str(ev.Payload["content_ref"])
+		algo, hash, size := parseContentRef(ref)
+		_, err = tx.Exec(`insert or ignore into content_addresses values(?,?,?,?,?,?)`, ref, algo, hash, size, casKey(ref), ev.EventID)
+	case "HistoricalInventoryScanRequested":
+		_, err = tx.Exec(`insert or ignore into historical_inventory_scans values(?,?,?,?,?,?,?)`, str(ev.Payload["scan_id"]), str(ev.Payload["historical_inventory_id"]), str(ev.Payload["inventory_type"]), pj("parser"), pj("filter"), pj("path_resolver"), ev.EventID)
+	case "HistoricalInventoryOccurrenceLinked":
+		_, err = tx.Exec(`insert or ignore into historical_seen_links values(?,?,?,?,?)`, str(ev.Payload["source_occurrence_id"]), str(ev.Payload["historical_inventory_id"]), str(ev.Payload["inventory_entry_id"]), str(ev.Payload["content_ref"]), ev.EventID)
+	case "IngestionScanStarted":
+		_, err = tx.Exec(`insert or replace into scans(scan_id,status,started_at_ms,stats_json) values(?,?,?,coalesce((select stats_json from scans where scan_id=?),'{}'))`, str(ev.Payload["scan_id"]), "started", int64Value(ev.Payload["started_at_ms"]), str(ev.Payload["scan_id"]))
+	case "IngestionScanCompleted":
+		_, err = tx.Exec(`insert or replace into scans(scan_id,status,completed_at_ms,stats_json) values(?,?,?,?)`, str(ev.Payload["scan_id"]), "completed", int64Value(ev.Payload["completed_at_ms"]), mustJSON(ev.Payload["stats"]))
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRootID, sourceKind, path, rel, invID, entryID string, report *ScanReport) error {
+	occID := newID("occ")
+	objID := newID("obj")
+	key := filepath.Join("objects", "acquired", objID)
+	dest := filepath.Join(s.Root, key)
+	result, err := copyHash(path, dest)
+	if err != nil {
+		_ = s.appendEvent("SourceFileAcquireFailed", causationID, &scanID, map[string]any{
+			"scan_id":        scanID,
+			"source_root_id": nullable(sourceRootID),
+			"path":           path,
+			"relative_path":  rel,
+			"error":          errPayload(err, true),
+		})
+		return err
+	}
+	ref := contentRef(result.Hash, result.Size)
+	existed := s.contentAddressExists(ref)
+	payload := map[string]any{
+		"scan_id":                 scanID,
+		"source_occurrence_id":    occID,
+		"stored_object_id":        objID,
+		"purpose":                 "source_media",
+		"content_ref":             ref,
+		"source_root_id":          nullable(sourceRootID),
+		"source_kind":             sourceKind,
+		"path":                    path,
+		"relative_path":           rel,
+		"historical_inventory_id": nullable(invID),
+		"inventory_entry_id":      nullable(entryID),
+		"acquired_storage_key":    filepath.ToSlash(key),
+		"source_file_before_copy": statPayload(path),
+		"copy_result": map[string]any{
+			"bytes_copied":   result.Size,
+			"hash_algorithm": "sha256",
+			"hash":           result.Hash,
+		},
+		"storage_disposition": map[string]any{
+			"cas_existed_at_ingest":    existed,
+			"acquired_object_retained": true,
+			"temporary_copy_discarded": false,
+		},
+	}
+	if err := s.appendEvent("SourceFileAcquired", causationID, &scanID, payload); err != nil {
+		return err
+	}
+	report.SourceFilesAcquired++
+	if !existed {
+		if err := s.materialize(objID, filepath.ToSlash(key), ref); err != nil {
+			return err
+		}
+		report.ContentAddressesMaterialized++
+	}
+	return nil
+}
+
+func (s *Store) materialize(objID, acquiredKey, ref string) error {
+	src := filepath.Join(s.Root, filepath.FromSlash(acquiredKey))
+	dst := filepath.Join(s.Root, filepath.FromSlash(casKey(ref)))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	if err := cloneOrCopy(src, dst); err != nil {
+		return err
+	}
+	return s.appendEvent("ContentAddressMaterialized", nil, nil, map[string]any{
+		"stored_object_id": objID,
+		"content_ref":      ref,
+		"materialization": map[string]any{
+			"method":  "apfs_clone_or_copy",
+			"created": true,
+		},
+	})
+}
+
+func (s *Store) contentAddressExists(ref string) bool {
+	_, err := os.Stat(filepath.Join(s.Root, filepath.FromSlash(casKey(ref))))
+	return err == nil
+}
+
+func (s *Store) sourceRoots() ([]SourceRoot, error) {
+	rows, err := s.DB.Query(`select source_root_id, root_path, label from source_roots order by root_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourceRoot
+	for rows.Next() {
+		var r SourceRoot
+		if err := rows.Scan(&r.ID, &r.Path, &r.Label); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+type inventoryProjection struct {
+	ID                 string
+	StoredObjectID     string
+	OriginalPath       string
+	Label              string
+	Group              string
+	AcquiredStorageKey string
+}
+
+func (s *Store) inventory(id string) (inventoryProjection, error) {
+	var inv inventoryProjection
+	err := s.DB.QueryRow(`select historical_inventory_id, stored_object_id, original_path, label, group_name, acquired_storage_key from historical_inventories where historical_inventory_id = ?`, id).Scan(&inv.ID, &inv.StoredObjectID, &inv.OriginalPath, &inv.Label, &inv.Group, &inv.AcquiredStorageKey)
+	return inv, err
+}
+
+func (s *Store) upsertInventoryEntry(scanID, invID string, e inventoryEntry) error {
+	var size any
+	if e.Size != nil {
+		size = *e.Size
+	}
+	_, err := s.DB.Exec(`insert or replace into historical_inventory_entries values(?,?,?,?,?,?,?,?,?)`, e.ID, scanID, invID, e.SHA256, size, e.HistoricalPath, e.ResolvedPath, e.Extension, e.RawLine)
+	return err
+}
+
+func (s *Store) seenContent(hash string, size *int64) (string, bool, error) {
+	if size != nil {
+		ref := contentRef(hash, *size)
+		var found string
+		err := s.DB.QueryRow(`select content_ref from content_addresses where content_ref = ? union select content_ref from source_content_links where content_ref = ? limit 1`, ref, ref).Scan(&found)
+		if err == nil {
+			return found, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", false, err
+		}
+	}
+	prefix := "sha256:" + strings.ToLower(hash) + ":%"
+	var found string
+	err := s.DB.QueryRow(`select content_ref from content_addresses where content_ref like ? union select content_ref from source_content_links where content_ref like ? limit 1`, prefix, prefix).Scan(&found)
+	if err == nil {
+		return found, true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return "", false, err
+}
+
+func (s *Store) writeReport(report *ScanReport) error {
+	b, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	jsonPath := filepath.Join(s.Root, "reports", "scan-"+report.ScanID+".json")
+	if err := os.WriteFile(jsonPath, b, 0o644); err != nil {
+		return err
+	}
+	lines := []string{
+		"Photostore scan report",
+		"scan: " + report.ScanID,
+		fmt.Sprintf("candidate files: %d", report.CandidateFilesSeen),
+		fmt.Sprintf("source files acquired: %d", report.SourceFilesAcquired),
+		fmt.Sprintf("historical entries loaded: %d", report.HistoricalJPEGEntriesLoaded),
+		fmt.Sprintf("historical entries already seen: %d", report.HistoricalEntriesAlreadySeen),
+	}
+	return os.WriteFile(filepath.Join(s.Root, "reports", "scan-"+report.ScanID+".txt"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
+type copyResult struct {
+	Hash string
+	Size int64
+}
+
+func copyHash(src, dst string) (copyResult, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return copyResult{}, err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return copyResult{}, err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return copyResult{}, err
+	}
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(out, h), in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return copyResult{}, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return copyResult{}, closeErr
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return copyResult{}, err
+	}
+	return copyResult{Hash: hex.EncodeToString(h.Sum(nil)), Size: n}, nil
+}
+
+func cloneOrCopy(src, dst string) error {
+	if err := exec.Command("cp", "-c", src, dst).Run(); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(dst)
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dst)
+		return closeErr
+	}
+	return nil
+}
+
+var annexSize = regexp.MustCompile(`SHA256E-s([0-9]+)--[0-9a-fA-F]{64}`)
+
+func parseInventory(path, invID, scanID string, exts []string) ([]inventoryEntry, error) {
+	allowed := map[string]bool{}
+	for _, ext := range exts {
+		allowed[strings.ToLower(ext)] = true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var entries []inventoryEntry
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024), 1024*1024*16)
+	for sc.Scan() {
+		raw := sc.Text()
+		fields := strings.Fields(raw)
+		if len(fields) < 2 || !isSHA256(fields[0]) {
+			continue
+		}
+		historicalPath := strings.Join(fields[1:], " ")
+		ext := strings.ToLower(filepath.Ext(historicalPath))
+		if !allowed[ext] {
+			continue
+		}
+		hash := strings.ToLower(fields[0])
+		var size *int64
+		if m := annexSize.FindStringSubmatch(historicalPath); len(m) == 2 {
+			var parsed int64
+			fmt.Sscanf(m[1], "%d", &parsed)
+			size = &parsed
+		}
+		idHash := sha256.Sum256([]byte(invID + "\x00" + hash + "\x00" + historicalPath))
+		entries = append(entries, inventoryEntry{
+			ID:             "ient_" + hex.EncodeToString(idHash[:]),
+			SHA256:         hash,
+			Size:           size,
+			HistoricalPath: historicalPath,
+			Extension:      ext,
+			RawLine:        raw,
+		})
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].HistoricalPath < entries[j].HistoricalPath })
+	return entries, nil
+}
+
+func resolveHistoricalPath(root, historicalPath string, stripPrefixes []string) string {
+	if root == "" || historicalPath == "" {
+		return ""
+	}
+	p := filepath.ToSlash(historicalPath)
+	for _, prefix := range stripPrefixes {
+		p = strings.TrimPrefix(p, filepath.ToSlash(prefix))
+	}
+	return filepath.Join(root, filepath.FromSlash(p))
+}
+
+func rootPayloads(roots []SourceRoot) []map[string]any {
+	out := make([]map[string]any, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, map[string]any{
+			"source_root_id": root.ID,
+			"root_path":      root.Path,
+			"label":          root.Label,
+		})
+	}
+	return out
+}
+
+func contentRef(hash string, size int64) string {
+	return fmt.Sprintf("sha256:%s:%d", strings.ToLower(hash), size)
+}
+
+func parseContentRef(ref string) (string, string, int64) {
+	parts := strings.Split(ref, ":")
+	if len(parts) != 3 {
+		return "", "", 0
+	}
+	var size int64
+	fmt.Sscanf(parts[2], "%d", &size)
+	return parts[0], parts[1], size
+}
+
+func casKey(ref string) string {
+	_, hash, _ := parseContentRef(ref)
+	if len(hash) < 4 {
+		return filepath.ToSlash(filepath.Join("cas", "sha256", "v1", hash))
+	}
+	return filepath.ToSlash(filepath.Join("cas", "sha256", "v1", hash[:2], hash[2:4], hash))
+}
+
+func isJPEG(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".jpg" || ext == ".jpeg"
+}
+
+func isSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func statPayload(path string) map[string]any {
+	st, err := os.Stat(path)
+	if err != nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"size":     st.Size(),
+		"mtime_ns": st.ModTime().UnixNano(),
+	}
+}
+
+func errPayload(err error, retryable bool) map[string]any {
+	return map[string]any{
+		"type":      "io_error",
+		"message":   err.Error(),
+		"retryable": retryable,
+	}
+}
+
+func newID(prefix string) string {
+	return prefix + "_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
+func nowMS() int64 {
+	return time.Now().UnixMilli()
+}
+
+func mustJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func str(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return fmt.Sprint(t)
+	}
+}
+
+func nullable(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func nullableString(v any) sql.NullString {
+	if v == nil {
+		return sql.NullString{}
+	}
+	s := str(v)
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func int64Value(v any) int64 {
+	switch t := v.(type) {
+	case int64:
+		return t
+	case int:
+		return int64(t)
+	case float64:
+		return int64(t)
+	default:
+		return 0
+	}
+}
+
+func boolInt(v any) int {
+	b, _ := v.(bool)
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func mapValue(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{}
+}
