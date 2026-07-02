@@ -653,6 +653,7 @@ func (s *Store) initSchema() error {
 		`create table if not exists content_metadata_failures(content_ref text, extractor_name text, extractor_version integer, failure_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, failed_at_ms integer, error_json text, primary key(content_ref, extractor_name, extractor_version))`,
 		`create table if not exists metadata_issues(issue_event_id text primary key, content_ref text, stored_object_id text, source_occurrence_id text, scan_id text, extractor_name text, extractor_version integer, detected_at_ms integer, issue_type text, severity text, details_json text)`,
 		`create table if not exists photo_capture_times(stored_object_id text primary key, content_ref text, source_occurrence_id text, scan_id text, filename text, relative_path text, capture_date text, capture_time_local text, utc_offset text, precision text, source_kind text, source_event_id text, extractor_name text, extractor_version integer, reducer_name text, reducer_version integer, raw_value text)`,
+		`create table if not exists duplicate_deduplications(source_occurrence_id text primary key, stored_object_id text, content_ref text, dedup_event_id text, deduplicated_at_ms integer, strategy_name text, strategy_version integer, replacement_method text)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.DB.Exec(stmt); err != nil {
@@ -660,6 +661,9 @@ func (s *Store) initSchema() error {
 		}
 	}
 	if err := s.rebuildPhotoCaptureTimeProjection(); err != nil {
+		return err
+	}
+	if err := s.rebuildDuplicateDeduplicationProjection(); err != nil {
 		return err
 	}
 	return nil
@@ -772,7 +776,13 @@ func (s *Store) applyEvent(ev Event) error {
 		issue := mapValue(ev.Payload["issue"])
 		_, err = tx.Exec(`insert or ignore into metadata_issues values(?,?,?,?,?,?,?,?,?,?,?)`, ev.EventID, str(ev.Payload["content_ref"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), str(extractor["name"]), int64Value(extractor["version"]), int64Value(ev.Payload["detected_at_ms"]), str(issue["type"]), str(issue["severity"]), mustJSON(ev.Payload))
 	case "DuplicateSourceObjectDeduplicated":
-		_, err = tx.Exec(`update source_content_links set acquired_object_retained = 0 where source_occurrence_id = ?`, str(ev.Payload["source_occurrence_id"]))
+		strategy := mapValue(ev.Payload["strategy"])
+		storage := mapValue(ev.Payload["storage"])
+		replacement := mapValue(storage["replacement"])
+		_, err = tx.Exec(`insert or replace into duplicate_deduplications values(?,?,?,?,?,?,?,?)`, str(ev.Payload["source_occurrence_id"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["content_ref"]), ev.EventID, int64Value(ev.Payload["deduplicated_at_ms"]), str(strategy["name"]), int64Value(strategy["version"]), str(replacement["method"]))
+		if err == nil {
+			_, err = tx.Exec(`update source_content_links set acquired_object_retained = 0 where source_occurrence_id = ?`, str(ev.Payload["source_occurrence_id"]))
+		}
 	}
 	if err != nil {
 		return err
