@@ -13,6 +13,8 @@ export type SourceRoot = {
   source_root_id: string;
   path: string;
   label: string;
+  last_scan_id?: string | null;
+  last_scan_completed_at_ms?: number | null;
 };
 
 export type ScanReport = {

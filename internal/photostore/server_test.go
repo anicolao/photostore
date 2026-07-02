@@ -64,6 +64,54 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if summary.RetainedDuplicateBytes != int64(len("one")) {
 		t.Fatalf("retained duplicate bytes = %d, want %d", summary.RetainedDuplicateBytes, len("one"))
 	}
+	getJSON(t, ts.URL+"/api/sources", &sources)
+	if sources[0].LastScanID == nil || *sources[0].LastScanID != *done.ResultRef {
+		t.Fatalf("last scan id = %#v, want %s", sources[0].LastScanID, *done.ResultRef)
+	}
+	if sources[0].LastScanCompletedAtMS == nil {
+		t.Fatal("missing last scan completed timestamp")
+	}
+}
+
+func TestServerCanScanSingleSourceRoot(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourceA := filepath.Join(root, "a")
+	sourceB := filepath.Join(root, "b")
+	mustMkdir(t, sourceA)
+	mustMkdir(t, sourceB)
+	mustWrite(t, filepath.Join(sourceA, "A.JPG"), []byte("a"))
+	mustWrite(t, filepath.Join(sourceB, "B.JPG"), []byte("b"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	idA, err := st.AddSourceRoot(sourceA, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddSourceRoot(sourceB, "b"); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	var started Job
+	postJSONInto(t, ts.URL+"/api/sources/"+idA+"/scan", map[string]string{}, http.StatusAccepted, &started)
+	done := waitJob(t, ts.URL, started.JobID)
+	if done.Status != "completed" {
+		t.Fatalf("job status = %s, error = %v", done.Status, done.Error)
+	}
+	var report ScanReport
+	getJSON(t, ts.URL+"/api/scans/"+*done.ResultRef+"/report", &report)
+	if report.SourceRootsScanned != 1 {
+		t.Fatalf("source roots scanned = %d, want 1", report.SourceRootsScanned)
+	}
+	if report.SourceFilesAcquired != 1 {
+		t.Fatalf("source files acquired = %d, want 1", report.SourceFilesAcquired)
+	}
 }
 
 func TestScansPreserveUnknownDuplicateStats(t *testing.T) {

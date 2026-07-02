@@ -115,6 +115,7 @@ GET  /api/store
 
 GET  /api/sources
 POST /api/sources
+POST /api/sources/{source_root_id}/scan
 
 GET  /api/scans
 POST /api/scans
@@ -147,7 +148,8 @@ asynchronously. The job projection should expose:
 
 `/api/jobs/{job_id}/events` can be Server-Sent Events. Polling
 `/api/jobs/{job_id}` is acceptable for the first implementation if it keeps the
-UI deterministic and simple.
+UI deterministic and simple. The MVP UI also polls projection endpoints
+periodically so changes made by CLI commands appear without a manual refresh.
 
 ## UI Surface
 
@@ -159,8 +161,8 @@ Primary regions:
 - Store status: store path, event count, content count, retained duplicate bytes,
   and last scan time.
 - Source roots: registered roots, labels, enabled state, and an add-source form.
-- Scan controls: start source scan, show progress, and link to the resulting
-  report.
+- Scan controls: start all-source scans or one source-root scan, show progress,
+  and link to the resulting report.
 - Historical inventories: acquired `.toc` files, labels, groups, and scan
   actions with resolver roots and extension filters.
 - Recent scan reports: discovered candidates, acquired objects, skipped trusted

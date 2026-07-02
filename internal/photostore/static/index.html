@@ -21,6 +21,9 @@
       th, td { border-top: 1px solid #eef1f5; padding: 8px; text-align: left; }
       code { word-break: break-all; }
       .row { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+      .source-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; border-top: 1px solid #eef1f5; padding: 9px 0; }
+      .source-row div { display: grid; gap: 3px; min-width: 0; }
+      .source-row span { color: #5f6368; font-size: 12px; }
       .error { color: #a50e0e; }
       @media (max-width: 720px) { form { grid-template-columns: 1fr; } }
     </style>
@@ -77,6 +80,11 @@
       function optionalNumber(value) {
         return value === null || value === undefined ? 'Unknown' : new Intl.NumberFormat('en-CA').format(value);
       }
+      function scanTime(value) {
+        return value === null || value === undefined
+          ? 'Never'
+          : new Intl.DateTimeFormat('en-CA', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+      }
       async function load() {
         const [store, sources, scans] = await Promise.all([
           json('/api/store'),
@@ -91,8 +99,13 @@
           stat('Duplicate bytes', store.retained_duplicate_bytes)
         ].join('');
         document.querySelector('#sources').innerHTML = sources.length
-          ? sources.map((s) => `<p><strong>${s.label}</strong><br><code>${s.path}</code></p>`).join('')
+          ? sources.map((s) => `<div class="source-row"><div><strong>${s.label}</strong><code>${s.path}</code><span>Last scan: ${scanTime(s.last_scan_completed_at_ms)}</span></div><button data-source-scan="${s.source_root_id}">Scan</button></div>`).join('')
           : '<p>No source roots registered.</p>';
+        document.querySelectorAll('[data-source-scan]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            await waitJob(await post(`/api/sources/${button.dataset.sourceScan}/scan`, {}));
+          });
+        });
         document.querySelector('#scans').innerHTML = scans.length
           ? `<table><thead><tr><th>Scan</th><th>Status</th><th>Acquired</th><th>Duplicates</th><th>Duplicate bytes</th></tr></thead><tbody>${scans.map((s) => `<tr><td><code>${s.scan_id}</code></td><td>${s.status}</td><td>${optionalNumber(s.report?.source_files_acquired)}</td><td>${optionalNumber(s.report?.duplicate_acquisitions)}</td><td>${optionalNumber(s.report?.duplicate_garbage_bytes)}</td></tr>`).join('')}</tbody></table>`
           : '<p>No scans yet.</p>';
@@ -119,6 +132,12 @@
       document.querySelector('#scan').addEventListener('click', async () => {
         await waitJob(await post('/api/scans', {}));
       });
+      setInterval(() => {
+        load().catch((err) => {
+          document.querySelector('#status').textContent = err.message;
+          document.querySelector('#status').className = 'error';
+        });
+      }, 3000);
       load().catch((err) => {
         document.querySelector('#status').textContent = err.message;
         document.querySelector('#status').className = 'error';
