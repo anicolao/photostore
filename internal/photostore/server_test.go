@@ -343,6 +343,28 @@ func TestScansPreserveUnknownDuplicateStats(t *testing.T) {
 	}
 }
 
+func TestMissingScanReportIsNotFound(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanID := "scan_started_without_report"
+	if _, err := st.DB.Exec(`insert into scans(scan_id,status,started_at_ms,stats_json) values(?,?,?,?)`, scanID, "started", int64(123), `{}`); err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+	res, err := http.Get(ts.URL + "/api/scans/" + scanID + "/report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing report status = %d, want 404", res.StatusCode)
+	}
+}
+
 func TestServeStaticFallback(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {

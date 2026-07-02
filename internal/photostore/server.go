@@ -163,6 +163,10 @@ func (s *Server) handleStartSingleSourceScan(w http.ResponseWriter, r *http.Requ
 func (s *Server) handleScanReport(w http.ResponseWriter, r *http.Request) {
 	report, err := s.store.Report(r.PathValue("scan_id"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
 		writeError(w, err)
 		return
 	}

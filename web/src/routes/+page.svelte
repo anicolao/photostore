@@ -94,6 +94,10 @@
     return new Intl.NumberFormat('en-CA').format(value);
   }
 
+  function hasKnownAcquiredCount(scan: ScanProjection) {
+    return scan.report?.source_files_acquired !== null && scan.report?.source_files_acquired !== undefined;
+  }
+
   function formatOptionalBytes(value: number | null | undefined) {
     if (value === null || value === undefined) {
       return 'Unknown';
@@ -119,8 +123,8 @@
     load();
     refreshTimer = setInterval(() => {
       if (activeJob?.status !== 'running') {
-        refresh().catch((err) => {
-          error = String(err);
+        refresh().catch(() => {
+          // Keep the last good projection visible if a transient read fails.
         });
       }
     }, 3000);
@@ -249,9 +253,13 @@
               <td><code>{scan.scan_id}</code></td>
               <td>{scan.status}</td>
               <td>
-                <a data-testid="scan-acquired-link" href={`/scans/${scan.scan_id}`}>
-                  {formatOptionalNumber(scan.report?.source_files_acquired)}
-                </a>
+                {#if hasKnownAcquiredCount(scan)}
+                  <a data-testid="scan-acquired-link" href={`/scans/${scan.scan_id}`}>
+                    {formatOptionalNumber(scan.report?.source_files_acquired)}
+                  </a>
+                {:else}
+                  <span data-testid="scan-acquired-unknown">Unknown</span>
+                {/if}
               </td>
               <td>{formatOptionalNumber(scan.report?.duplicate_acquisitions)}</td>
               <td>{formatOptionalBytes(scan.report?.duplicate_garbage_bytes)}</td>
