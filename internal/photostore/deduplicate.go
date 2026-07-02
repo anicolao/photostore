@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -57,7 +56,7 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 			"requires_byte_comparison":       true,
 			"requires_canonical_rehash":      true,
 			"requires_duplicate_rehash":      true,
-			"replacement_order":              []string{"apfs_clone", "hard_link"},
+			"replacement_order":              []string{"hard_link"},
 			"delete_duplicate_before_relink": true,
 		},
 	})
@@ -157,11 +156,13 @@ func (s *Store) verifyAndDeduplicateCandidate(candidate duplicateCandidate) (fil
 	if err := os.Remove(duplicatePath); err != nil {
 		return result, "", dedupRelinkError{err: err}
 	}
-	method, err := cloneOrHardLink(canonicalPath, duplicatePath)
-	if err != nil {
+	if err := os.Link(canonicalPath, duplicatePath); err != nil {
 		return result, "", dedupRelinkError{err: err}
 	}
-	return result, method, nil
+	if err := chmodCompleteFile(duplicatePath); err != nil {
+		return result, "", dedupRelinkError{err: err}
+	}
+	return result, "hard_link", nil
 }
 
 func verifyDuplicateFiles(canonicalPath, duplicatePath string) (fileVerification, error) {
@@ -219,16 +220,5 @@ func verifyDuplicateFiles(canonicalPath, duplicatePath string) (fileVerification
 		if errB != nil && errB != io.EOF {
 			return fileVerification{}, errB
 		}
-	}
-}
-
-func cloneOrHardLink(src, dst string) (string, error) {
-	if err := exec.Command("cp", "-c", src, dst).Run(); err == nil {
-		return "apfs_clone", nil
-	}
-	if err := os.Link(src, dst); err == nil {
-		return "hard_link", nil
-	} else {
-		return "", err
 	}
 }

@@ -1142,7 +1142,7 @@ func copyHash(src, dst string) (copyResult, error) {
 	}
 	defer in.Close()
 	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return copyResult{}, err
 	}
@@ -1161,19 +1161,22 @@ func copyHash(src, dst string) (copyResult, error) {
 		_ = os.Remove(tmp)
 		return copyResult{}, err
 	}
+	if err := chmodCompleteFile(dst); err != nil {
+		return copyResult{}, err
+	}
 	return copyResult{Hash: hex.EncodeToString(h.Sum(nil)), Size: n}, nil
 }
 
 func cloneOrCopy(src, dst string) error {
 	if err := exec.Command("cp", "-c", src, dst).Run(); err == nil {
-		return nil
+		return chmodCompleteFile(dst)
 	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
@@ -1187,7 +1190,11 @@ func cloneOrCopy(src, dst string) error {
 		_ = os.Remove(dst)
 		return closeErr
 	}
-	return nil
+	return chmodCompleteFile(dst)
+}
+
+func chmodCompleteFile(path string) error {
+	return os.Chmod(path, 0o600)
 }
 
 var annexSize = regexp.MustCompile(`SHA256E-s([0-9]+)--[0-9a-fA-F]{64}`)
