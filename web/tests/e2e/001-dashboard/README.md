@@ -83,17 +83,18 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ---
 
-## The image view shows the original image and an EXIF side panel.
+## The image view shows the original image and a readable information side panel.
 
-![The image view shows the original image and an EXIF side panel.](./screenshots/007-image-exif-side-panel.png)
+![The image view shows the original image and a readable information side panel.](./screenshots/007-image-exif-side-panel.png)
 
 **Verifications:**
 - [x] Image view renders the photo
 - [x] Open original serves image/jpeg
 - [x] EXIF panel is visible
-- [x] Camera make is visible
-- [x] Camera model is visible
-- [x] Capture timestamp is visible
+- [x] Camera summary is visible
+- [x] Capture date summary is visible
+- [x] Location summary is visible
+- [x] Raw EXIF debug section is available
 
 ---
 

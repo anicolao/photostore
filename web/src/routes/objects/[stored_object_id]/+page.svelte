@@ -11,6 +11,9 @@
 
   $: bytesURL = storedObjectID ? `/api/objects/${storedObjectID}/bytes` : '';
   $: fields = metadata ? Object.entries(metadata.fields).toSorted(([a], [b]) => a.localeCompare(b)) : [];
+  $: camera = metadata ? cameraLabel(metadata.fields) : '';
+  $: takenAt = metadata ? captureDateLabel(metadata.fields) : '';
+  $: location = metadata ? locationLabel(metadata.fields) : '';
 
   onMount(async () => {
     storedObjectID = $page.params.stored_object_id ?? '';
@@ -23,6 +26,55 @@
 
   function fieldValue(field: Record<string, string>) {
     return field.raw ?? '';
+  }
+
+  function rawField(fields: ObjectMetadata['fields'], name: string) {
+    return fields[name]?.raw?.trim() ?? '';
+  }
+
+  function cameraLabel(fields: ObjectMetadata['fields']) {
+    const make = rawField(fields, 'make');
+    const model = rawField(fields, 'model');
+    if (make && model && !model.toLowerCase().includes(make.toLowerCase())) {
+      return `${make} ${model}`;
+    }
+    return model || make || 'Unknown camera';
+  }
+
+  function captureDateLabel(fields: ObjectMetadata['fields']) {
+    const raw = rawField(fields, 'datetime_original') || rawField(fields, 'create_date') || rawField(fields, 'modify_date');
+    if (!raw) return 'Unknown date';
+    const match = raw.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+    if (!match) return raw;
+    const [, year, month, day, hour, minute, second] = match;
+    return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+  }
+
+  function locationLabel(fields: ObjectMetadata['fields']) {
+    const lat = gpsCoordinate(fields, 'gps_latitude', 'gps_latitude_ref');
+    const lon = gpsCoordinate(fields, 'gps_longitude', 'gps_longitude_ref');
+    if (lat === null || lon === null) {
+      return 'No GPS location';
+    }
+    return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  }
+
+  function gpsCoordinate(fields: ObjectMetadata['fields'], valueKey: string, refKey: string) {
+    const raw = rawField(fields, valueKey);
+    if (!raw) return null;
+    const parts = raw.split(',').map(rationalValue);
+    if (parts.length < 3 || parts.some((part) => part === null)) {
+      return null;
+    }
+    const ref = rawField(fields, refKey).toUpperCase();
+    const sign = ref === 'S' || ref === 'W' ? -1 : 1;
+    return sign * (parts[0]! + parts[1]! / 60 + parts[2]! / 3600);
+  }
+
+  function rationalValue(raw: string) {
+    const [num, den] = raw.split('/').map(Number);
+    if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) return null;
+    return num / den;
   }
 </script>
 
@@ -56,20 +108,37 @@
         <button aria-label="Close info" on:click={() => (infoOpen = false)}>Close</button>
       </div>
       {#if metadata}
-        <p class="extractor">{metadata.extractor_name} v{metadata.extractor_version}</p>
-        <dl>
-          {#each fields as [name, field]}
-            <div data-testid="exif-row">
-              <dt>{name}</dt>
-              <dd>
-                {#if fieldValue(field)}
-                  <strong>{fieldValue(field)}</strong>
-                {/if}
-                <span>{field.ifd} {field.tag} {field.type} x{field.count}</span>
-              </dd>
-            </div>
-          {/each}
-        </dl>
+        <section class="summary-panel" aria-label="Photo information">
+          <div>
+            <span>Camera</span>
+            <strong data-testid="photo-camera">{camera}</strong>
+          </div>
+          <div>
+            <span>Taken</span>
+            <strong data-testid="photo-date">{takenAt}</strong>
+          </div>
+          <div>
+            <span>Location</span>
+            <strong data-testid="photo-location">{location}</strong>
+          </div>
+        </section>
+        <details class="debug-exif" data-testid="raw-exif">
+          <summary>Raw EXIF</summary>
+          <p class="extractor">{metadata.extractor_name} v{metadata.extractor_version}</p>
+          <dl>
+            {#each fields as [name, field]}
+              <div data-testid="exif-row">
+                <dt>{name}</dt>
+                <dd>
+                  {#if fieldValue(field)}
+                    <strong>{fieldValue(field)}</strong>
+                  {/if}
+                  <span>{field.ifd} {field.tag} {field.type} x{field.count}</span>
+                </dd>
+              </div>
+            {/each}
+          </dl>
+        </details>
       {:else if metadataError}
         <p class="error" data-testid="exif-error">{metadataError}</p>
       {:else}
@@ -168,8 +237,44 @@
     margin: 8px 0 14px;
   }
 
+  .summary-panel {
+    display: grid;
+    gap: 12px;
+    margin: 16px 0;
+  }
+
+  .summary-panel div {
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    padding: 12px;
+    background: #f8fafc;
+  }
+
+  .summary-panel span {
+    display: block;
+    color: #5f6368;
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+
+  .summary-panel strong {
+    display: block;
+    font-size: 16px;
+    font-weight: 650;
+    overflow-wrap: anywhere;
+  }
+
+  .debug-exif {
+    margin-top: 14px;
+  }
+
+  summary {
+    cursor: pointer;
+    font-weight: 650;
+  }
+
   dl {
-    margin: 0;
+    margin: 12px 0 0;
   }
 
   dl div {

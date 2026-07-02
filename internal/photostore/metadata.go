@@ -385,6 +385,24 @@ func exifFieldName(ifdName string, tag uint16) string {
 }
 
 func knownEXIFFieldName(ifdName string, tag uint16) string {
+	if ifdName == "gps" {
+		switch tag {
+		case 0x0001:
+			return "gps_latitude_ref"
+		case 0x0002:
+			return "gps_latitude"
+		case 0x0003:
+			return "gps_longitude_ref"
+		case 0x0004:
+			return "gps_longitude"
+		case 0x0005:
+			return "gps_altitude_ref"
+		case 0x0006:
+			return "gps_altitude"
+		case 0x001d:
+			return "gps_date_stamp"
+		}
+	}
 	switch tag {
 	case 0x010f:
 		return "make"
