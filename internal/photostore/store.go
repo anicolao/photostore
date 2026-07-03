@@ -561,6 +561,10 @@ func scanWorkers(opts ScanOptions) int {
 	if opts.Workers > 0 {
 		return opts.Workers
 	}
+	return boundedCPUWorkers()
+}
+
+func boundedCPUWorkers() int {
 	workers := runtime.NumCPU()
 	if workers > defaultMaxScanWorkers {
 		return defaultMaxScanWorkers

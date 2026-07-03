@@ -9,6 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"sync"
 )
 
 const thumbnailMaxDimension = 240
@@ -31,6 +34,19 @@ type ThumbnailIssue struct {
 	Error          string `json:"error"`
 }
 
+type thumbnailContentGroup struct {
+	ContentRef string
+	Path       string
+	Files      []AcquiredFileProjection
+}
+
+type thumbnailResult struct {
+	Group     thumbnailContentGroup
+	Existing  bool
+	Generated bool
+	Err       error
+}
+
 func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) ThumbnailSummary {
 	files, err := s.AcquiredFiles(scanID)
 	if err != nil {
@@ -38,32 +54,124 @@ func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) Th
 		return ThumbnailSummary{ScanID: scanID, Failed: 1}
 	}
 	summary := ThumbnailSummary{ScanID: scanID}
-	for _, file := range files {
-		thumb, ok, err := s.ThumbnailFile(file.StoredObjectID)
-		if err != nil {
-			summary.Failed++
-			summary.Issues = append(summary.Issues, thumbnailIssue(file, err))
-			progressf(progress, "thumbnail path failed for %s: %v", file.Filename, err)
+	groups, groupingIssues := s.thumbnailContentGroups(files)
+	for _, issue := range groupingIssues {
+		summary.Failed++
+		summary.Issues = append(summary.Issues, issue)
+		progressf(progress, "thumbnail path failed for %s: %s", issue.Filename, issue.Error)
+	}
+	jobs := make(chan thumbnailContentGroup)
+	results := make(chan thumbnailResult)
+	var wg sync.WaitGroup
+	workers := thumbnailWorkers()
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for group := range jobs {
+				results <- s.ensureThumbnailForContent(group)
+			}
+		}()
+	}
+	go func() {
+		for _, group := range groups {
+			jobs <- group
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+	for result := range results {
+		count := len(result.Group.Files)
+		file := result.Group.Files[0]
+		if result.Err != nil {
+			summary.Failed += count
+			summary.Issues = append(summary.Issues, thumbnailIssue(file, result.Err))
+			progressf(progress, "thumbnail unavailable for %s (%s; object %s): %v", file.Filename, thumbnailSourceLabel(file), file.StoredObjectID, result.Err)
 			continue
 		}
-		if ok {
-			summary.Existing++
+		if result.Existing {
+			summary.Existing += count
 			continue
 		}
-		if err := s.writeThumbnailForObject(file.StoredObjectID, thumb); err != nil {
-			summary.Failed++
-			summary.Issues = append(summary.Issues, thumbnailIssue(file, err))
-			progressf(progress, "thumbnail unavailable for %s (%s; object %s): %v", file.Filename, thumbnailSourceLabel(file), file.StoredObjectID, err)
-			continue
+		if result.Generated {
+			summary.Generated++
+			if count > 1 {
+				summary.Existing += count - 1
+			}
+			progressf(progress, "thumbnail generated for %s", file.Filename)
 		}
-		summary.Generated++
-		progressf(progress, "thumbnail generated for %s", file.Filename)
 	}
 	progressf(progress, "thumbnails generated: %d, already present: %d, unavailable: %d", summary.Generated, summary.Existing, summary.Failed)
 	if err := s.writeThumbnailReport(summary); err != nil {
 		progressf(progress, "thumbnail report write failed: %v", err)
 	}
 	return summary
+}
+
+func (s *Store) thumbnailContentGroups(files []AcquiredFileProjection) ([]thumbnailContentGroup, []ThumbnailIssue) {
+	byRef := map[string]*thumbnailContentGroup{}
+	var issues []ThumbnailIssue
+	for _, file := range files {
+		if file.ContentRef == "" {
+			issues = append(issues, thumbnailIssue(file, fmt.Errorf("missing content ref")))
+			continue
+		}
+		thumb, err := s.thumbnailPath(file.ContentRef)
+		if err != nil {
+			issues = append(issues, thumbnailIssue(file, err))
+			continue
+		}
+		group, ok := byRef[file.ContentRef]
+		if !ok {
+			group = &thumbnailContentGroup{ContentRef: file.ContentRef, Path: thumb}
+			byRef[file.ContentRef] = group
+		}
+		group.Files = append(group.Files, file)
+	}
+	groups := make([]thumbnailContentGroup, 0, len(byRef))
+	for _, group := range byRef {
+		groups = append(groups, *group)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].ContentRef < groups[j].ContentRef
+	})
+	return groups, issues
+}
+
+func (s *Store) ensureThumbnailForContent(group thumbnailContentGroup) thumbnailResult {
+	info, err := os.Stat(group.Path)
+	if err == nil {
+		if info.IsDir() {
+			return thumbnailResult{Group: group, Err: fmt.Errorf("thumbnail path is a directory")}
+		}
+		return thumbnailResult{Group: group, Existing: true}
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return thumbnailResult{Group: group, Err: err}
+	}
+	if err := s.writeThumbnailForObject(group.Files[0].StoredObjectID, group.Path); err != nil {
+		info, statErr := os.Stat(group.Path)
+		if statErr == nil && !info.IsDir() {
+			return thumbnailResult{Group: group, Existing: true}
+		}
+		return thumbnailResult{Group: group, Err: err}
+	}
+	return thumbnailResult{Group: group, Generated: true}
+}
+
+func thumbnailWorkers() int {
+	return workersFromEnv("PHOTOSTORE_THUMBNAIL_WORKERS")
+}
+
+func workersFromEnv(name string) int {
+	if raw := os.Getenv(name); raw != "" {
+		workers, err := strconv.Atoi(raw)
+		if err == nil && workers > 0 {
+			return workers
+		}
+	}
+	return boundedCPUWorkers()
 }
 
 func thumbnailIssue(file AcquiredFileProjection, err error) ThumbnailIssue {

@@ -136,7 +136,7 @@ These numbers estimate the retained duplicate data created by the scan.
 
 ## Current Limits
 
-- Source scans use bounded parallel acquisition workers; event log and projection commits remain serialized.
+- Source scans, thumbnail generation, metadata refresh, and duplicate deduplication use bounded parallel workers; event log and projection commits remain serialized.
 - Newly seen CAS content is materialized with a hard link from the acquired object; filesystems without hard-link support are not supported.
 - Projection replay is maintained from the event log using a byte-offset cursor.
 - Archive traversal is not implemented.
@@ -153,7 +153,10 @@ go run ./cmd/photostore serve --store ./photostore-data
 Then open `http://127.0.0.1:8080`. The server binds to loopback by default and
 refuses public addresses unless `--allow-public-bind` is passed explicitly.
 Set `PHOTOSTORE_SCAN_WORKERS=N` before starting the server to override the
-default bounded scan worker count for UI-triggered scans.
+default bounded scan worker count for UI-triggered scans. Set
+`PHOTOSTORE_THUMBNAIL_WORKERS=N`, `PHOTOSTORE_DEDUP_WORKERS=N`, or
+`PHOTOSTORE_METADATA_WORKERS=N` to override the corresponding bounded worker
+counts for thumbnail generation, duplicate deduplication, and metadata refresh.
 Completed scans generate thumbnails for acquired JPEGs. The scan drilldown view
 uses those thumbnails when available and shows a placeholder for photos whose
 thumbnail has not been generated yet. Thumbnail directories are projection
