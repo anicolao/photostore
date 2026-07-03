@@ -22,8 +22,9 @@ coherent, the implementation honors it, and the doc/code contradictions that
 existed have been resolved on the code side, the doc side, or both —
 deliberately, per finding.
 
-Two small new issues were introduced by the server hardening (see "New
-Observations"); both are edge-case usability problems, not security holes.
+Two small new issues were introduced by the server hardening and then fixed in
+the follow-up correction: non-canonical loopback/wildcard hosts are accepted
+according to bind semantics, and lossy SSE delivery now has a visible counter.
 
 ## What Is Strong
 
@@ -175,22 +176,17 @@ Observations"); both are edge-case usability problems, not security holes.
   lists `POST/DELETE .../capture-time`, `CaptureTimeCorrected`, and
   `CaptureTimeCleared` as not implemented.
 
-## New Observations (introduced by the fixes)
+## Follow-Up Corrections
 
-1. **The Host allowlist breaks non-canonical hostnames.** `allowedHost` is the
-   literal `--addr` value, so with the default `127.0.0.1:8080` a user who
-   types `http://localhost:8080` gets 403 on every request. Worse, with
-   `--allow-public-bind --addr 0.0.0.0:8080`, no real request ever carries
-   `Host: 0.0.0.0:8080`, so the public-bind escape hatch is now entirely
-   non-functional. Suggest: when the bind IP is loopback, also accept
-   `localhost` (and the other loopback literals); when it is unspecified
-   (`0.0.0.0`/`::`), match on port only or require an explicit
-   `--allowed-host`. The dev proxy is unaffected (`changeOrigin: true`).
-2. **SSE drops events for slow consumers silently.** `broadcast` uses a
-   non-blocking send into a 128-slot channel; a stalled client loses events
-   with no `job_snapshot` resync until it reconnects. Fine for progress
-   chatter, but worth a comment or a dropped-event counter so a future
-   consumer doesn't assume the stream is lossless.
+1. **Host allowlist edge cases — FIXED.** The server now derives an explicit
+   host policy from `ListenAddr`: loopback binds accept `localhost`,
+   `127.0.0.1`, and `::1` on the bound port; unspecified binds such as
+   `0.0.0.0:8080`, `[::]:8080`, or `:8080` accept any hostname on that port;
+   specific non-loopback binds keep exact-host matching.
+2. **Lossy SSE delivery visibility — FIXED.** `broadcast` now comments that the
+   SSE stream is a progress notification channel, not durable state; slow
+   subscribers can resync from `/api/jobs`, and dropped events increment
+   `event_stream_dropped_events`, exposed through `/api/health`.
 
 ## Remaining Items (carried forward, all minor)
 
@@ -204,10 +200,8 @@ Observations"); both are edge-case usability problems, not security holes.
 
 ## Priority Recommendations
 
-1. Fix the Host allowlist for `localhost` and `--allow-public-bind` — the
-   latter is currently a broken flag.
-2. When partial-precision capture dates are implemented, adopt the design's
+1. When partial-precision capture dates are implemented, adopt the design's
    precision vocabulary at the same time (the projection column already
    exists).
-3. Split the historical-inventory E2E flow out of `001-dashboard` before the
+2. Split the historical-inventory E2E flow out of `001-dashboard` before the
    next significant UI change, per the updated E2E_GUIDE.

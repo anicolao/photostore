@@ -238,6 +238,101 @@ func TestServerRejectsDisallowedHost(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("allowed host status = %d, want 200", res.StatusCode)
 	}
+
+	req, err = http.NewRequest(http.MethodGet, ts.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "localhost:8080"
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("localhost loopback status = %d, want 200", res.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodGet, ts.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "[::1]:8080"
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ipv6 loopback status = %d, want 200", res.StatusCode)
+	}
+}
+
+func TestServerWildcardBindAllowsAnyHostOnBoundPort(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{ListenAddr: "0.0.0.0:8080"}))
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "photos.example.test:8080"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("wildcard host status = %d, want 200", res.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodGet, ts.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "photos.example.test:9090"
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("wildcard wrong port status = %d, want 403", res.StatusCode)
+	}
+}
+
+func TestServerHealthReportsDroppedEventStreamEvents(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	server := NewServer(st, ServerOptions{}).(*Server)
+	ch := server.subscribe()
+	defer server.unsubscribe(ch)
+
+	for i := 0; i < cap(ch)+3; i++ {
+		server.broadcast(ServerEvent{Type: "job_progress", RecordedAtMS: int64(i + 1)})
+	}
+
+	ts := httptest.NewServer(server)
+	defer ts.Close()
+	var health struct {
+		OK                       bool   `json:"ok"`
+		EventStreamDroppedEvents uint64 `json:"event_stream_dropped_events"`
+	}
+	getJSON(t, ts.URL+"/api/health", &health)
+	if !health.OK {
+		t.Fatal("health ok = false")
+	}
+	if health.EventStreamDroppedEvents != 3 {
+		t.Fatalf("dropped events = %d, want 3", health.EventStreamDroppedEvents)
+	}
 }
 
 func TestServerRequiresJSONContentTypeForMutations(t *testing.T) {
