@@ -2,6 +2,7 @@ package photostore
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,9 +32,10 @@ const schemaVersion = 1
 var deterministicIDCounter atomic.Uint64
 
 type Store struct {
-	Root    string
-	DB      *sql.DB
-	eventMu sync.Mutex
+	Root      string
+	DB        *sql.DB
+	eventMu   sync.Mutex
+	contentMu sync.Mutex
 }
 
 type Event struct {
@@ -73,6 +76,12 @@ type ScanReport struct {
 }
 
 type ProgressFunc func(message string)
+
+type ScanOptions struct {
+	Workers int
+}
+
+const defaultMaxScanWorkers = 8
 
 type inventoryEntry struct {
 	ID             string
@@ -274,7 +283,11 @@ func (s *Store) AcquireInventory(path, label, group string) (string, error) {
 }
 
 func (s *Store) ScanSources(progress ProgressFunc) (string, error) {
-	return s.ScanSourceRoots(nil, progress)
+	return s.ScanSourcesWithOptions(progress, ScanOptions{})
+}
+
+func (s *Store) ScanSourcesWithOptions(progress ProgressFunc, opts ScanOptions) (string, error) {
+	return s.ScanSourceRootsWithOptions(nil, progress, opts)
 }
 
 func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, error) {
@@ -311,57 +324,8 @@ func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, 
 	}); err != nil {
 		return "", err
 	}
-	for _, root := range roots {
-		progressf(progress, "resuming source root %s (%s)", root.Label, root.Path)
-		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return nil
-			}
-			if d.IsDir() {
-				report.DirectoriesSeen++
-				return nil
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			report.RegularFilesSeen++
-			if !isJPEG(path) {
-				report.NonCandidateFilesSkipped++
-				return nil
-			}
-			report.CandidateFilesSeen++
-			rel, _ := filepath.Rel(root.Path, path)
-			relSlash := filepath.ToSlash(rel)
-			if processed[root.ID][relSlash] {
-				return nil
-			}
-			progressf(progress, "acquiring %s", path)
-			entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
-				"scan_id":                 scanID,
-				"source_root_id":          root.ID,
-				"source_kind":             "source_root",
-				"path":                    path,
-				"relative_path":           relSlash,
-				"historical_inventory_id": nil,
-				"inventory_entry_id":      nil,
-				"entry_type":              "regular_file",
-				"filesystem":              statPayload(path),
-				"candidate_reason": map[string]any{
-					"method":    "extension",
-					"extension": strings.ToLower(filepath.Ext(path)),
-				},
-			})
-			if err != nil {
-				return err
-			}
-			if err := s.acquireSourceFile(scanID, &entryID, root.ID, "source_root", path, relSlash, "", "", report); err != nil {
-				report.SourceFileAcquireFailures++
-			}
-			return nil
-		})
-		if err != nil {
-			return "", err
-		}
+	if err := s.scanSourceRootFiles(scanID, roots, processed, report, progress, ScanOptions{}); err != nil {
+		return "", err
 	}
 	if err := s.writeReport(report); err != nil {
 		return "", err
@@ -393,6 +357,10 @@ func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, 
 }
 
 func (s *Store) ScanSourceRoots(sourceRootIDs []string, progress ProgressFunc) (string, error) {
+	return s.ScanSourceRootsWithOptions(sourceRootIDs, progress, ScanOptions{})
+}
+
+func (s *Store) ScanSourceRootsWithOptions(sourceRootIDs []string, progress ProgressFunc, opts ScanOptions) (string, error) {
 	scanID := newID("scan")
 	roots, err := s.sourceRoots()
 	if err != nil {
@@ -429,53 +397,8 @@ func (s *Store) ScanSourceRoots(sourceRootIDs []string, progress ProgressFunc) (
 		return "", err
 	}
 	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
-	for _, root := range roots {
-		progressf(progress, "scanning source root %s (%s)", root.Label, root.Path)
-		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return nil
-			}
-			if d.IsDir() {
-				report.DirectoriesSeen++
-				return nil
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				return nil
-			}
-			report.RegularFilesSeen++
-			if !isJPEG(path) {
-				report.NonCandidateFilesSkipped++
-				return nil
-			}
-			report.CandidateFilesSeen++
-			progressf(progress, "acquiring %s", path)
-			rel, _ := filepath.Rel(root.Path, path)
-			entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
-				"scan_id":                 scanID,
-				"source_root_id":          root.ID,
-				"source_kind":             "source_root",
-				"path":                    path,
-				"relative_path":           filepath.ToSlash(rel),
-				"historical_inventory_id": nil,
-				"inventory_entry_id":      nil,
-				"entry_type":              "regular_file",
-				"filesystem":              statPayload(path),
-				"candidate_reason": map[string]any{
-					"method":    "extension",
-					"extension": strings.ToLower(filepath.Ext(path)),
-				},
-			})
-			if err != nil {
-				return err
-			}
-			if err := s.acquireSourceFile(scanID, &entryID, root.ID, "source_root", path, filepath.ToSlash(rel), "", "", report); err != nil {
-				report.SourceFileAcquireFailures++
-			}
-			return nil
-		})
-		if err != nil {
-			return "", err
-		}
+	if err := s.scanSourceRootFiles(scanID, roots, nil, report, progress, opts); err != nil {
+		return "", err
 	}
 	if err := s.writeReport(report); err != nil {
 		return "", err
@@ -504,6 +427,155 @@ func (s *Store) ScanSourceRoots(sourceRootIDs []string, progress ProgressFunc) (
 		return "", err
 	}
 	return scanID, nil
+}
+
+type sourceFileCandidate struct {
+	Root     SourceRoot
+	Path     string
+	RelSlash string
+}
+
+func (s *Store) scanSourceRootFiles(scanID string, roots []SourceRoot, processed map[string]map[string]bool, report *ScanReport, progress ProgressFunc, opts ScanOptions) error {
+	workers := scanWorkers(opts)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	jobs := make(chan sourceFileCandidate, workers*2)
+	var reportMu sync.Mutex
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+	setErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		defer errMu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if ctx.Err() != nil {
+					continue
+				}
+				if err := s.acquireSourceCandidate(scanID, candidate, report, &reportMu, progress); err != nil {
+					setErr(err)
+				}
+			}
+		}()
+	}
+	for _, root := range roots {
+		if processed == nil {
+			progressf(progress, "scanning source root %s (%s) with %s", root.Label, root.Path, workerLabel(workers))
+		} else {
+			progressf(progress, "resuming source root %s (%s) with %s", root.Label, root.Path, workerLabel(workers))
+		}
+		err := filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if d.IsDir() {
+				reportMu.Lock()
+				report.DirectoriesSeen++
+				reportMu.Unlock()
+				return nil
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			reportMu.Lock()
+			report.RegularFilesSeen++
+			reportMu.Unlock()
+			if !isJPEG(path) {
+				reportMu.Lock()
+				report.NonCandidateFilesSkipped++
+				reportMu.Unlock()
+				return nil
+			}
+			reportMu.Lock()
+			report.CandidateFilesSeen++
+			reportMu.Unlock()
+			rel, _ := filepath.Rel(root.Path, path)
+			relSlash := filepath.ToSlash(rel)
+			if processed != nil && processed[root.ID][relSlash] {
+				return nil
+			}
+			select {
+			case jobs <- sourceFileCandidate{Root: root, Path: path, RelSlash: relSlash}:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			setErr(err)
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	errMu.Lock()
+	defer errMu.Unlock()
+	return firstErr
+}
+
+func (s *Store) acquireSourceCandidate(scanID string, candidate sourceFileCandidate, report *ScanReport, reportMu *sync.Mutex, progress ProgressFunc) error {
+	progressf(progress, "acquiring %s", candidate.Path)
+	entryID, err := s.appendEventReturnID("SourceEntryObserved", nil, &scanID, map[string]any{
+		"scan_id":                 scanID,
+		"source_root_id":          candidate.Root.ID,
+		"source_kind":             "source_root",
+		"path":                    candidate.Path,
+		"relative_path":           candidate.RelSlash,
+		"historical_inventory_id": nil,
+		"inventory_entry_id":      nil,
+		"entry_type":              "regular_file",
+		"filesystem":              statPayload(candidate.Path),
+		"candidate_reason": map[string]any{
+			"method":    "extension",
+			"extension": strings.ToLower(filepath.Ext(candidate.Path)),
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := s.acquireSourceFile(scanID, &entryID, candidate.Root.ID, "source_root", candidate.Path, candidate.RelSlash, "", "", report, reportMu); err != nil {
+		reportMu.Lock()
+		report.SourceFileAcquireFailures++
+		reportMu.Unlock()
+	}
+	return nil
+}
+
+func scanWorkers(opts ScanOptions) int {
+	if opts.Workers > 0 {
+		return opts.Workers
+	}
+	workers := runtime.NumCPU()
+	if workers > defaultMaxScanWorkers {
+		return defaultMaxScanWorkers
+	}
+	if workers < 1 {
+		return 1
+	}
+	return workers
+}
+
+func workerLabel(workers int) string {
+	if workers == 1 {
+		return "1 worker"
+	}
+	return fmt.Sprintf("%d workers", workers)
 }
 
 func (s *Store) ScanInventory(invID, invType string, exts []string, resolverRoot string, stripPrefixes []string, caseSensitive bool) (string, error) {
@@ -616,7 +688,7 @@ func (s *Store) ScanInventoryWithProgress(invID, invType string, exts []string, 
 		if err != nil {
 			return "", err
 		}
-		if err := s.acquireSourceFile(scanID, &entryID, "", "historical_inventory_resolved_path", ent.ResolvedPath, filepath.ToSlash(ent.HistoricalPath), inv.ID, ent.ID, report); err != nil {
+		if err := s.acquireSourceFile(scanID, &entryID, "", "historical_inventory_resolved_path", ent.ResolvedPath, filepath.ToSlash(ent.HistoricalPath), inv.ID, ent.ID, report, nil); err != nil {
 			report.SourceFileAcquireFailures++
 		}
 	}
@@ -971,7 +1043,7 @@ func advanceProjectionCursor(tx *sql.Tx, ev Event, nextOffset int64) error {
 	return err
 }
 
-func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRootID, sourceKind, path, rel, invID, entryID string, report *ScanReport) error {
+func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRootID, sourceKind, path, rel, invID, entryID string, report *ScanReport, reportMu *sync.Mutex) error {
 	occID := newID("occ")
 	objID := newID("obj")
 	key := filepath.Join("objects", "acquired", objID)
@@ -988,6 +1060,7 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 		return err
 	}
 	ref := contentRef(result.Hash, result.Size)
+	s.contentMu.Lock()
 	existed := s.contentAddressExists(ref)
 	payload := map[string]any{
 		"scan_id":                 scanID,
@@ -1015,23 +1088,41 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 		},
 	}
 	if err := s.appendEvent("SourceFileAcquired", causationID, &scanID, payload); err != nil {
+		s.contentMu.Unlock()
 		return err
 	}
-	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key)); err != nil {
-		return err
-	}
-	report.SourceFilesAcquired++
+	withReportLock(reportMu, func() {
+		report.SourceFilesAcquired++
+	})
 	if existed {
-		report.DuplicateAcquisitions++
-		report.DuplicateGarbageBytes += result.Size
+		withReportLock(reportMu, func() {
+			report.DuplicateAcquisitions++
+			report.DuplicateGarbageBytes += result.Size
+		})
 	}
 	if !existed {
 		if err := s.materialize(objID, filepath.ToSlash(key), ref); err != nil {
+			s.contentMu.Unlock()
 			return err
 		}
-		report.ContentAddressesMaterialized++
+		withReportLock(reportMu, func() {
+			report.ContentAddressesMaterialized++
+		})
 	}
+	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key)); err != nil {
+		s.contentMu.Unlock()
+		return err
+	}
+	s.contentMu.Unlock()
 	return nil
+}
+
+func withReportLock(mu *sync.Mutex, fn func()) {
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+	fn()
 }
 
 func (s *Store) materialize(objID, acquiredKey, ref string) error {

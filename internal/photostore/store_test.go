@@ -24,10 +24,11 @@ func TestScanSourcesAcquiresOnlyJPEGs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+	sourceID, err := st.AddSourceRoot(sourcePath, "source")
+	if err != nil {
 		t.Fatal(err)
 	}
-	scanID, err := st.ScanSources(nil)
+	scanID, err := st.ScanSourceRootsWithOptions([]string{sourceID}, nil, ScanOptions{Workers: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

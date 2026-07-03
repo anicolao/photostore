@@ -564,7 +564,7 @@ func TestServerCanResumeStartedSourceScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	partialReport := &ScanReport{ScanID: scanID}
-	if err := st.acquireSourceFile(scanID, &entryID, sourceID, "source_root", filepath.Join(sourcePath, "A.JPG"), "A.JPG", "", "", partialReport); err != nil {
+	if err := st.acquireSourceFile(scanID, &entryID, sourceID, "source_root", filepath.Join(sourcePath, "A.JPG"), "A.JPG", "", "", partialReport, nil); err != nil {
 		t.Fatal(err)
 	}
 

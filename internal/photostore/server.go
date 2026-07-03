@@ -26,18 +26,20 @@ import (
 var fallbackStatic embed.FS
 
 type ServerOptions struct {
-	APIOnly bool
+	APIOnly     bool
+	ScanOptions ScanOptions
 }
 
 type Server struct {
-	store   *Store
-	apiOnly bool
-	mux     *http.ServeMux
-	mu      sync.Mutex
-	jobsMu  sync.Mutex
-	jobs    map[string]*Job
-	subsMu  sync.Mutex
-	subs    map[chan ServerEvent]struct{}
+	store       *Store
+	apiOnly     bool
+	scanOptions ScanOptions
+	mux         *http.ServeMux
+	mu          sync.Mutex
+	jobsMu      sync.Mutex
+	jobs        map[string]*Job
+	subsMu      sync.Mutex
+	subs        map[chan ServerEvent]struct{}
 }
 
 type Job struct {
@@ -60,14 +62,28 @@ type ServerEvent struct {
 
 func NewServer(store *Store, opts ServerOptions) http.Handler {
 	s := &Server{
-		store:   store,
-		apiOnly: opts.APIOnly,
-		mux:     http.NewServeMux(),
-		jobs:    map[string]*Job{},
-		subs:    map[chan ServerEvent]struct{}{},
+		store:       store,
+		apiOnly:     opts.APIOnly,
+		scanOptions: serverScanOptions(opts.ScanOptions),
+		mux:         http.NewServeMux(),
+		jobs:        map[string]*Job{},
+		subs:        map[chan ServerEvent]struct{}{},
 	}
 	s.routes()
 	return s
+}
+
+func serverScanOptions(opts ScanOptions) ScanOptions {
+	if opts.Workers != 0 {
+		return opts
+	}
+	if raw, ok := os.LookupEnv("PHOTOSTORE_SCAN_WORKERS"); ok {
+		workers, err := strconv.Atoi(raw)
+		if err == nil {
+			opts.Workers = workers
+		}
+	}
+	return opts
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +183,7 @@ func (s *Server) handleStartSourceScan(w http.ResponseWriter, r *http.Request) {
 	job := s.startJob("source_scan", func(progress ProgressFunc) (string, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		scanID, err := s.store.ScanSources(progress)
+		scanID, err := s.store.ScanSourcesWithOptions(progress, s.scanOptions)
 		if err != nil {
 			return "", err
 		}
@@ -182,7 +198,7 @@ func (s *Server) handleStartSingleSourceScan(w http.ResponseWriter, r *http.Requ
 	job := s.startJob("source_scan", func(progress ProgressFunc) (string, error) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		scanID, err := s.store.ScanSourceRoots([]string{sourceRootID}, progress)
+		scanID, err := s.store.ScanSourceRootsWithOptions([]string{sourceRootID}, progress, s.scanOptions)
 		if err != nil {
 			return "", err
 		}
