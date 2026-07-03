@@ -852,7 +852,7 @@ func TestMissingScanReportIsNotFound(t *testing.T) {
 	}
 }
 
-func TestServeStaticFallback(t *testing.T) {
+func TestServeStaticRequiresBuildDir(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {
 		t.Fatal(err)
@@ -861,15 +861,15 @@ func TestServeStaticFallback(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
 	NewServer(st, ServerOptions{}).ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rr.Code)
 	}
-	if !bytes.Contains(rr.Body.Bytes(), []byte("Photostore")) {
-		t.Fatalf("fallback page did not render Photostore title")
+	if !bytes.Contains(rr.Body.Bytes(), []byte("web UI build directory is required")) {
+		t.Fatalf("missing build response = %q", rr.Body.String())
 	}
 }
 
-func TestServeBuildFileRequiresExplicitBuildDir(t *testing.T) {
+func TestServeBuildFileUsesConfiguredBuildDir(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {
 		t.Fatal(err)
@@ -881,13 +881,6 @@ func TestServeBuildFileRequiresExplicitBuildDir(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rr := httptest.NewRecorder()
-	NewServer(st, ServerOptions{}).ServeHTTP(rr, req)
-	if bytes.Contains(rr.Body.Bytes(), []byte("Custom Build")) {
-		t.Fatal("served build directory without explicit BuildDir")
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/", nil)
-	rr = httptest.NewRecorder()
 	NewServer(st, ServerOptions{BuildDir: buildDir}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)

@@ -218,13 +218,18 @@ func run(args []string) error {
 		storePath := fs.String("store", "./photostore-data", "store path")
 		addr := fs.String("addr", "127.0.0.1:8080", "listen address")
 		apiOnly := fs.Bool("api-only", false, "serve only API routes")
-		buildDir := fs.String("build-dir", "", "explicit path to a built web UI directory")
+		buildDir := fs.String("build-dir", "web/build", "path to built web UI directory")
 		allowPublicBind := fs.Bool("allow-public-bind", false, "allow binding to non-loopback addresses")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if !*allowPublicBind && !isLoopbackAddr(*addr) {
 			return fmt.Errorf("refusing to bind %s; use --allow-public-bind to serve beyond loopback", *addr)
+		}
+		if !*apiOnly {
+			if err := photostore.ValidateBuildDir(*buildDir); err != nil {
+				return err
+			}
 		}
 		st, err := photostore.Open(*storePath)
 		if err != nil {

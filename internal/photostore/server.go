@@ -2,11 +2,9 @@ package photostore
 
 import (
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"mime"
 	"net"
 	"net/http"
@@ -19,9 +17,6 @@ import (
 	"sync"
 	"sync/atomic"
 )
-
-//go:embed static/*
-var fallbackStatic embed.FS
 
 type ServerOptions struct {
 	APIOnly     bool
@@ -911,26 +906,17 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if s.serveBuildFile(w, r) {
+	if err := s.serveBuildFile(w, r); err != nil {
+		writeErrorStatus(w, http.StatusServiceUnavailable, err)
 		return
 	}
-	if r.URL.Path != "/" {
-		r = r.Clone(r.Context())
-		r.URL.Path = "/"
-	}
-	fsys, _ := fs.Sub(fallbackStatic, "static")
-	http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 }
 
-func (s *Server) serveBuildFile(w http.ResponseWriter, r *http.Request) bool {
-	if s.buildDir == "" {
-		return false
+func (s *Server) serveBuildFile(w http.ResponseWriter, r *http.Request) error {
+	if err := ValidateBuildDir(s.buildDir); err != nil {
+		return err
 	}
 	root := s.buildDir
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
-		return false
-	}
 	path := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
 	if path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
 		path = "index.html"
@@ -943,7 +929,25 @@ func (s *Server) serveBuildFile(w http.ResponseWriter, r *http.Request) bool {
 		full = filepath.Join(root, "index.html")
 	}
 	http.ServeFile(w, r, full)
-	return true
+	return nil
+}
+
+func ValidateBuildDir(buildDir string) error {
+	if buildDir == "" {
+		return errors.New("web UI build directory is required; run `cd web && bun run build`, pass --build-dir, or pass --api-only")
+	}
+	info, err := os.Stat(buildDir)
+	if err != nil {
+		return fmt.Errorf("web UI build directory %q is not available: %w; run `cd web && bun run build`, pass --build-dir, or pass --api-only", buildDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("web UI build directory %q is not a directory; pass --build-dir or pass --api-only", buildDir)
+	}
+	indexPath := filepath.Join(buildDir, "index.html")
+	if _, err := os.Stat(indexPath); err != nil {
+		return fmt.Errorf("web UI build directory %q is missing index.html: %w; run `cd web && bun run build`, pass --build-dir, or pass --api-only", buildDir, err)
+	}
+	return nil
 }
 
 func decodeJSON(r *http.Request, dst any) error {
