@@ -83,6 +83,7 @@ func TestOpenReplaysUnappliedEventLogTail(t *testing.T) {
 	if applied != 1 {
 		t.Fatalf("applied count = %d, want 1", applied)
 	}
+	assertProjectionOffsetAtLogEnd(t, st)
 }
 
 func TestOpenWithoutProjectionCursorReplaysWholeLogToRepairOlderHoles(t *testing.T) {
@@ -123,6 +124,22 @@ func TestOpenWithoutProjectionCursorReplaysWholeLogToRepairOlderHoles(t *testing
 		if count != 1 {
 			t.Fatalf("%s count = %d, want 1", sourceRootID, count)
 		}
+	}
+	assertProjectionOffsetAtLogEnd(t, st)
+}
+
+func assertProjectionOffsetAtLogEnd(t *testing.T, st *Store) {
+	t.Helper()
+	size, err := st.eventLogSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offset int64
+	if err := st.DB.QueryRow(`select next_offset from projection_state where projection_name = ?`, "main").Scan(&offset); err != nil {
+		t.Fatal(err)
+	}
+	if offset != size {
+		t.Fatalf("projection next_offset = %d, want event log size %d", offset, size)
 	}
 }
 
