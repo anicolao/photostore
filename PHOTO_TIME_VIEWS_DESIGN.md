@@ -422,6 +422,11 @@ Commands should append events. Read APIs should query projections.
 
 Metadata extraction normally runs during ingestion scans. `POST /api/metadata/refresh-missing` is an explicit maintenance command for stored photo content that has no success or failure result for the active extractor version.
 
+Current implementation status:
+
+- Implemented: scan-time metadata extraction, metadata refresh for unattempted content, date-browsing read APIs, undated photos, and image metadata display.
+- Not implemented: `POST /api/objects/{stored_object_id}/capture-time`, `DELETE /api/objects/{stored_object_id}/capture-time`, `CaptureTimeCorrected`, and `CaptureTimeCleared`.
+
 ## UI Design
 
 Add a Photos by Date section to the web UI.

@@ -43,7 +43,7 @@ Go is the better MVP choice because ingestion is naturally a bounded pipeline:
 
 - A walker goroutine enumerates candidate paths.
 - Acquisition workers copy external bytes into temporary Photostore-owned files while hashing the incoming stream.
-- A content-address materializer APFS-clones newly seen content into CAS.
+- A content-address materializer hard-links newly seen content into CAS.
 - A single event writer serializes events into append-only JSONL order.
 - SQLite projection writes are serialized or batched behind the event writer.
 
@@ -210,14 +210,14 @@ Rules:
 - Directory walking may run one goroutine per source root.
 - Acquisition should use a bounded worker pool.
 - Event append and projection updates must be single-writer.
-- CAS materialization assumes APFS for the MVP and should use file cloning where possible.
+- CAS materialization assumes a filesystem with hard-link support.
 - Report generation runs after `IngestionScanCompleted`.
 - Cancellation should flow through `context.Context`.
 - The scan should continue after recoverable per-file failures.
 
 ## Exact MVP Event Types
 
-These are the only event types required for the MVP.
+These are the event types used by the MVP. The list is canonical for the current implementation slice.
 
 ### StoreInitialized
 
@@ -556,7 +556,9 @@ Payload:
 
 `causation_id` should reference `SourceEntryObserved`.
 
-When `cas_existed_at_ingest` is `false`, the temporary copy is retained as `stored_object_id` and APFS-cloned into CAS. When `cas_existed_at_ingest` is `true`, the temporary copy is still retained in the MVP; the later deduplication job may delete it only after recomputing both hashes and performing a byte-for-byte comparison against the canonical CAS target.
+When `cas_existed_at_ingest` is `false`, the temporary copy is retained as `stored_object_id` and hard-linked into CAS. The acquired object and the CAS object are then two names for the same immutable inode, so this path does not create duplicate bytes. When `cas_existed_at_ingest` is `true`, the temporary copy is still retained in the MVP; the later deduplication job may delete it only after recomputing both hashes and performing a byte-for-byte comparison against the canonical CAS target, then replacing the duplicate path with a hard link to the CAS inode.
+
+The MVP intentionally chose hard links over APFS clones for CAS materialization. A first acquisition has already copied the external source bytes into Photostore-owned storage, and the logical CAS materialization operation is to give those same bytes their content-addressed name. Creating an APFS clone at this point would create a second logical file that the deduplication process would later have to collapse.
 
 ### HistoricalInventoryOccurrenceLinked
 
@@ -656,6 +658,193 @@ Payload:
 }
 ```
 
+### IngestionScanResumeRequested
+
+Emitted when the user requests that an interrupted or started scan continue using the recorded scan roots and projected already-acquired paths.
+
+Payload:
+
+```json
+{
+  "scan_id": "scan_...",
+  "resumed_at_ms": 1782933120123,
+  "source_roots": [
+    {
+      "source_root_id": "src_...",
+      "root_path": "/Volumes/OldBackup",
+      "label": "OldBackup"
+    }
+  ],
+  "already_acquired": 4519
+}
+```
+
+The event records the resume command. The set of paths skipped during resume is projection state derived from prior acquisition events for the same scan.
+
+### PhotoMetadataRefreshRequested
+
+Emitted when the user requests metadata extraction for stored photo content that has no success or failure result for the active extractor version.
+
+Payload:
+
+```json
+{
+  "request_id": "meta_req_...",
+  "requested_at_ms": 1782933120123,
+  "selector": {
+    "type": "missing_metadata_results"
+  },
+  "extractor": {
+    "name": "photostore-exif",
+    "version": 2
+  }
+}
+```
+
+### PhotoMetadataExtracted
+
+Emitted when the active extractor successfully reads metadata from a Photostore-owned stored object.
+
+Payload:
+
+```json
+{
+  "stored_object_id": "obj_...",
+  "source_occurrence_id": "occ_...",
+  "scan_id": "scan_...",
+  "content_ref": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789:3456789",
+  "extractor": {
+    "name": "photostore-exif",
+    "version": 2
+  },
+  "extraction_context": {
+    "phase": "ingestion_scan",
+    "source_kind": "source_root"
+  },
+  "extracted_at_ms": 1782933120123,
+  "fields": {
+    "datetime_original": {
+      "value": "2012:07:04 09:30:00"
+    }
+  },
+  "warnings": []
+}
+```
+
+This event records the raw extracted artifact. Timestamp interpretation, calendar bucketing, and effective capture-time choice are reducer work.
+
+### PhotoMetadataExtractionFailed
+
+Emitted when the active extractor cannot read metadata from a Photostore-owned stored object.
+
+Payload:
+
+```json
+{
+  "stored_object_id": "obj_...",
+  "source_occurrence_id": "occ_...",
+  "scan_id": "scan_...",
+  "content_ref": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789:3456789",
+  "extractor": {
+    "name": "photostore-exif",
+    "version": 2
+  },
+  "failed_at_ms": 1782933120123,
+  "error": {
+    "type": "metadata_extraction_failed",
+    "message": "invalid jpeg",
+    "retryable": false
+  }
+}
+```
+
+### PhotoMetadataObservationMismatchDetected
+
+Emitted when scanning duplicate content produces a metadata observation that differs from the existing projection for the same `content_ref` and extractor version.
+
+Payload:
+
+```json
+{
+  "stored_object_id": "obj_...",
+  "source_occurrence_id": "occ_...",
+  "scan_id": "scan_...",
+  "content_ref": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789:3456789",
+  "extractor": {
+    "name": "photostore-exif",
+    "version": 2
+  },
+  "detected_at_ms": 1782933120123,
+  "existing_metadata_fields": {},
+  "observed_metadata_fields": {},
+  "observed_extraction_error": null,
+  "issue": {
+    "type": "metadata_mismatch",
+    "severity": "error"
+  }
+}
+```
+
+### DuplicateDeduplicationRequested
+
+Emitted when the user requests verification and deduplication of retained duplicate source objects.
+
+Payload:
+
+```json
+{
+  "request_id": "dedup_req_...",
+  "requested_at_ms": 1782933120123,
+  "selector": {
+    "type": "retained_source_objects"
+  },
+  "verification": {
+    "hash_algorithm": "sha256",
+    "requires_byte_comparison": true,
+    "requires_canonical_rehash": true,
+    "requires_duplicate_rehash": true,
+    "atomic_relink": true
+  },
+  "strategy": {
+    "name": "hard_link_verified_duplicate",
+    "version": 3
+  }
+}
+```
+
+### DuplicateSourceObjectDeduplicated
+
+Emitted after a retained duplicate object has been rehashed, byte-compared against the canonical CAS object, and atomically replaced with a hard link to the CAS inode.
+
+Payload:
+
+```json
+{
+  "request_id": "dedup_req_...",
+  "source_occurrence_id": "occ_...",
+  "stored_object_id": "obj_...",
+  "content_ref": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789:3456789",
+  "deduplicated_at_ms": 1782933120123,
+  "strategy": {
+    "name": "hard_link_verified_duplicate",
+    "version": 3
+  },
+  "verification": {
+    "hash_algorithm": "sha256",
+    "canonical_hash": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "duplicate_hash": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    "byte_comparison": true,
+    "bytes_compared": 3456789
+  },
+  "storage": {
+    "duplicate_deleted": true,
+    "replacement": {
+      "method": "hard_link"
+    }
+  }
+}
+```
+
 ## Reducers And Projections
 
 Use SQLite for MVP projections. Tables are rebuildable from `events.jsonl` plus immutable stored objects.
@@ -703,7 +892,7 @@ For each candidate JPEG:
 4. Compute `content_ref` from the incoming hash and byte count.
 5. If the CAS path for `content_ref` does not exist:
    - move or retain the temporary file as `objects/acquired/obj_...`
-   - APFS-clone that acquired object to the derived CAS path
+   - hard-link that acquired object to the derived CAS path
    - emit `SourceFileAcquired` with `cas_existed_at_ingest: false`
    - emit `ContentAddressMaterialized`
 6. If the CAS path for `content_ref` already exists:
@@ -716,7 +905,7 @@ For each historical inventory file:
 
 1. Copy the inventory file into `objects/acquired/obj_...`, computing SHA-256 and byte count while copying.
 2. Emit `HistoricalInventoryFileAcquired`, or `HistoricalInventoryFileAcquireFailed`.
-3. If the CAS path for the inventory content does not exist, APFS-clone the acquired object into CAS and emit `ContentAddressMaterialized`.
+3. If the CAS path for the inventory content does not exist, hard-link the acquired object into CAS and emit `ContentAddressMaterialized`.
 4. If the CAS path already exists, keep the acquired inventory object anyway because it is small relative to media and is the durable input to future inventory scans.
 
 For each historical inventory scan request:
@@ -747,7 +936,7 @@ Before deleting an acquired object as a duplicate of a canonical CAS object, the
 5. Perform a byte-for-byte comparison of the acquired object and canonical target.
 6. Only after the byte comparison succeeds, replace or mark the acquired object according to the storage policy.
 
-The MVP can defer the deletion/replacement policy. The important requirement is that deletion is never based only on the incoming hash computed during acquisition.
+The MVP replacement policy is to link the canonical CAS object to a temporary name in the duplicate object's directory, chmod it `0400`, and atomically rename it over the duplicate path. The important requirement is that replacement is never based only on the incoming hash computed during acquisition.
 
 ## Hash Algorithm Recovery
 
@@ -825,7 +1014,7 @@ The MVP is complete when:
 - Inventory scans resolve and acquire referenced image files only for selected entries whose trusted hash is not already seen.
 - A scan recursively finds `.jpg` and `.jpeg` files only.
 - Every readable candidate JPEG is copied into Photostore while computing SHA-256 and byte count.
-- Newly seen content is materialized into CAS using APFS clone.
+- Newly seen content is materialized into CAS using a hard link.
 - Duplicate source occurrences retain copied bytes until a later deduplication process recomputes hashes and performs a byte-for-byte comparison.
 - Duplicate groups are projection output, not events.
 - Historical inventory matches are projection output, not events.

@@ -9,7 +9,7 @@ The MVP is intentionally narrow:
 - It hashes bytes while copying them into Photostore.
 - It stores retained acquired objects under `objects/acquired/`.
 - It materializes newly seen content under `cas/sha256/v1/`.
-- It stores generated JPEG thumbnails under `thumbnails/jpeg/240/orient-v2/`.
+- It stores generated JPEG thumbnails under `thumbnails/jpeg/240/orient-v3/`.
 - It records append-only JSONL events under `events/events.jsonl`.
 - It maintains rebuildable SQLite projections in `projections.sqlite3`.
 - It can acquire historical `.toc`-style inventory files and use their trusted hashes to skip duplicate byte acquisition.
@@ -55,7 +55,7 @@ photostore-data/
   events/events.jsonl
   objects/acquired/
   cas/sha256/v1/
-  thumbnails/jpeg/240/orient-v2/
+  thumbnails/jpeg/240/orient-v3/
   tmp/
   projections.sqlite3
   reports/

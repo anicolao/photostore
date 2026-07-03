@@ -10,7 +10,7 @@ The project is designed around a few core beliefs:
 - Photo workflows need fast triage, rich metadata, non-destructive editing, and reliable sharing.
 - The photo model should make assets, source files, recipes, projections, and sharing state explicit.
 
-This repository currently contains design documents for the eventual system. The goal is to capture the target architecture before reducing it into a concrete implementation plan.
+This repository contains the early Photostore design documents and a runnable ingestion MVP. The current implementation can initialize a local store, scan local JPEG directory trees, acquire historical `.toc` inventories, preserve bytes in a content-addressed store, deduplicate retained duplicates, extract EXIF metadata, generate thumbnails, and serve a local web UI for reviewing scan progress and photos.
 
 ## Intended Capabilities
 
@@ -79,4 +79,12 @@ Materialized outputs can be cached as blobs, but they are projections. The recip
 
 ## Current Status
 
-This repository is in the design phase. The documents describe the intended eventual system before a committed implementation plan exists.
+The repository has moved past design-only work. The implemented MVP is focused on ingestion and review:
+
+- Go CLI and local web server in `cmd/photostore` and `internal/photostore`.
+- SvelteKit UI in `web/`.
+- Append-only JSONL event log with SQLite projections.
+- `.jpg`/`.jpeg` source scans and historical `.toc` inventory scans.
+- Content-addressed storage with hard-link materialization.
+- Thumbnail, metadata, date-browsing, and duplicate-deduplication workflows.
+- Go tests, Playwright E2E tests, screenshot baselines, and macOS CI.
