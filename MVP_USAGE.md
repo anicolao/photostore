@@ -148,11 +148,16 @@ These numbers estimate the retained duplicate data created by the scan.
 Start the local web interface:
 
 ```sh
+cd web && bun run build
+cd ..
 go run ./cmd/photostore serve --store ./photostore-data
 ```
 
 Then open `http://127.0.0.1:8080`. The server binds to loopback by default and
 refuses public addresses unless `--allow-public-bind` is passed explicitly.
+The default UI build directory is `web/build`; pass `--build-dir` to serve a
+different built UI. If the build directory is missing, `serve` fails instead of
+serving an alternate UI.
 Set `PHOTOSTORE_SCAN_WORKERS=N` before starting the server to override the
 default bounded scan worker count for UI-triggered scans. Set
 `PHOTOSTORE_THUMBNAIL_WORKERS=N`, `PHOTOSTORE_DEDUP_WORKERS=N`, or

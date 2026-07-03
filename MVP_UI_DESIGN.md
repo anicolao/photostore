@@ -79,18 +79,22 @@ Behavior:
 - Bind to `127.0.0.1:8080` by default.
 - Serve JSON APIs under `/api/*`.
 - Serve the built frontend for all non-API paths.
+- Fail startup if the built frontend directory is missing, unless `--api-only`
+  is set. Do not serve alternate or fallback UI.
 - Print the URL on startup.
 - Refuse non-loopback addresses unless the user passes an explicit
   `--allow-public-bind` flag.
 
-The implementation can use Go `embed` for the built frontend:
+The default build directory is `web/build`, which supports the normal
+repository-local command:
 
 ```text
-go generate or release build:
-  cd web && bun install --frozen-lockfile
-  cd web && bun run build
-  go build ./cmd/photostore
+cd web && bun install --frozen-lockfile
+cd web && bun run build
+go run ./cmd/photostore serve --store ./photostore-data
 ```
+
+Use `--build-dir` to point at a different built UI directory.
 
 For local frontend development, run Vite and Go separately:
 
@@ -220,7 +224,7 @@ The MVP is local-first:
 
 ## Implementation Phases
 
-1. Add `photostore serve` with `/api/health`, `/api/store`, embedded static
+1. Add `photostore serve` with `/api/health`, `/api/store`, explicit built UI
    serving, and dev proxy support.
 2. Add read-only projection APIs and render the dashboard.
 3. Add source registration and source scan jobs.
