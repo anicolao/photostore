@@ -140,6 +140,7 @@ These numbers estimate the retained duplicate data created by the scan.
 - Newly seen CAS content is materialized with a hard link from the acquired object; filesystems without hard-link support are not supported.
 - Projection replay is maintained from the event log using a byte-offset cursor.
 - Archive traversal is not implemented.
+- Hash-only inventory files such as `.lookup` and `all` are not implemented.
 - Non-JPEG media is not implemented.
 
 ## Serve The MVP Web UI
