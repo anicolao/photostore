@@ -13,12 +13,13 @@
   let sourceLabel = '';
   let error = '';
   let loading = true;
+  let hydrated = false;
   let jobLogOpen = false;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   let eventsSocket: WebSocket | undefined;
   let eventsClosed = false;
-  $: runningJobActive = jobs.some((job) => job.status === 'running') || activeJob?.status === 'running';
+  $: runningJobActive = activeJob?.status === 'running';
 
   async function refresh(showLoading = false) {
     if (showLoading) {
@@ -100,6 +101,9 @@
   }
 
   function applyJobs(jobs: Job[]) {
+    if (activeJob?.status === 'running' && !jobs.some((job) => job.job_id === activeJob?.job_id)) {
+      return;
+    }
     const runningJob = jobs.find((job) => job.status === 'running');
     if (runningJob) {
       activeJob = runningJob;
@@ -170,7 +174,9 @@
       finished_at_ms: scan.completed_at_ms,
       result_ref: scan.scan_id,
       error: null,
-      progress
+      progress,
+      progress_current: null,
+      progress_total: null
     };
   }
 
@@ -187,6 +193,7 @@
     jobLogOpen = false;
     try {
       activeJob = await start();
+      jobs = upsertJob(jobs, activeJob);
       connectEvents();
       await refresh();
     } catch (err) {
@@ -265,6 +272,21 @@
     return job.progress.at(-1) ?? 'Waiting for progress...';
   }
 
+  function jobStatusMessage(job: Job) {
+    return `${job.kind}: ${job.status}`;
+  }
+
+  function hasProgressTotal(job: Job) {
+    return job.progress_total !== null && job.progress_total > 0 && job.progress_current !== null;
+  }
+
+  function progressPercent(job: Job) {
+    if (!hasProgressTotal(job)) {
+      return 0;
+    }
+    return Math.max(0, Math.min(100, (job.progress_current! / job.progress_total!) * 100));
+  }
+
   function elideMiddle(value: string, maxLength = 60) {
     if (value.length <= maxLength) {
       return value;
@@ -277,6 +299,7 @@
   }
 
   onMount(() => {
+    hydrated = true;
     load();
     connectEvents();
     refreshTimer = setInterval(() => {
@@ -313,9 +336,9 @@
     <div class="topbar-actions">
       <a class="button-link" data-testid="photos-by-date-link" href="/photos/dates">Photos by date</a>
       <a class="button-link" data-testid="metadata-link" href="/metadata">Metadata</a>
-      <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={runningJobActive}>Refresh metadata</button>
-      <button data-testid="deduplicate-duplicates" on:click={deduplicate} disabled={runningJobActive || (store?.retained_duplicate_bytes ?? 0) === 0}>Deduplicate</button>
-      <button on:click={() => refresh(true)} disabled={loading}>Refresh</button>
+      <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={!hydrated || runningJobActive}>Refresh metadata</button>
+      <button data-testid="deduplicate-duplicates" on:click={deduplicate} disabled={!hydrated || runningJobActive || (store?.retained_duplicate_bytes ?? 0) === 0}>Deduplicate</button>
+      <button on:click={() => refresh(true)} disabled={!hydrated || loading}>Refresh</button>
     </div>
   </header>
 
@@ -346,14 +369,14 @@
     <section aria-labelledby="sources-heading">
       <div class="section-heading">
         <h2 id="sources-heading">Source roots</h2>
-        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={runningJobActive}>
+        <button class="primary" data-testid="start-source-scan" on:click={scanSources} disabled={!hydrated || runningJobActive}>
           Scan
         </button>
       </div>
       <form data-testid="add-source-form" on:submit|preventDefault={submitSource}>
         <input data-testid="source-path-input" bind:value={sourcePath} placeholder="Path" aria-label="Source path" required>
         <input data-testid="source-label-input" bind:value={sourceLabel} placeholder="Label" aria-label="Source label">
-        <button type="submit">Add</button>
+        <button type="submit" disabled={!hydrated}>Add</button>
       </form>
       {#if sources.length === 0}
         <p class="empty" data-testid="sources-empty">No source roots registered.</p>
@@ -366,7 +389,7 @@
                 <code>{source.path}</code>
                 <span>Last scan: {formatScanTime(source.last_scan_completed_at_ms)}</span>
               </div>
-              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={runningJobActive}>
+              <button data-testid="scan-source-{source.source_root_id}" on:click={() => scanSource(source.source_root_id)} disabled={!hydrated || runningJobActive}>
                 Scan
               </button>
             </li>
@@ -379,15 +402,24 @@
       <div class="section-heading">
         <h2 id="job-heading">Job status</h2>
         {#if activeJob && activeJob.progress.length > 0}
-          <button data-testid="toggle-job-log" on:click={() => (jobLogOpen = !jobLogOpen)}>
+          <button data-testid="toggle-job-log" on:click={() => (jobLogOpen = !jobLogOpen)} disabled={!hydrated}>
             {jobLogOpen ? 'Close log' : 'Open log'}
           </button>
         {/if}
       </div>
       {#if activeJob}
-        <p data-testid="job-status">{activeJob.kind}: {activeJob.status}</p>
+        {@const statusMessage = jobStatusMessage(activeJob)}
+        <p class="compact-line" data-testid="job-status" title={statusMessage} aria-label={statusMessage}>{elideMiddle(statusMessage)}</p>
         {@const progressMessage = latestProgress(activeJob)}
-        <p class="progress-current" data-testid="job-latest-progress" title={progressMessage} aria-label={progressMessage}>{elideMiddle(progressMessage)}</p>
+        <p class="compact-line progress-current" data-testid="job-latest-progress" title={progressMessage} aria-label={progressMessage}>{elideMiddle(progressMessage)}</p>
+        {#if hasProgressTotal(activeJob)}
+          <div class="job-progress" data-testid="job-progress" aria-label="Job progress">
+            <div class="job-progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax={activeJob.progress_total ?? 0} aria-valuenow={activeJob.progress_current ?? 0}>
+              <span style={`width: ${progressPercent(activeJob)}%`}></span>
+            </div>
+            <span data-testid="job-progress-count">{activeJob.progress_current} of {activeJob.progress_total}</span>
+          </div>
+        {/if}
         {#if activeJob.error}<p class="error">{activeJob.error}</p>{/if}
         {#if jobLogOpen}
           <div class="job-log" data-testid="job-log" role="log" aria-label="Job progress log">
@@ -435,9 +467,9 @@
               <td>{formatOptionalNumber(scan.report?.duplicate_acquisitions)}</td>
               <td>{formatOptionalBytes(scan.report?.duplicate_garbage_bytes)}</td>
               <td>
-                <button data-testid="scan-status-{scan.scan_id}" on:click={() => selectScanStatus(scan)}>Status</button>
+                <button data-testid="scan-status-{scan.scan_id}" on:click={() => selectScanStatus(scan)} disabled={!hydrated}>Status</button>
                 {#if canResume(scan)}
-                  <button data-testid="resume-scan-{scan.scan_id}" on:click={() => resume(scan.scan_id)}>Resume</button>
+                  <button data-testid="resume-scan-{scan.scan_id}" on:click={() => resume(scan.scan_id)} disabled={!hydrated}>Resume</button>
                 {/if}
               </td>
             </tr>
@@ -596,13 +628,47 @@
     color: #a50e0e;
   }
 
-  .progress-current {
+  .compact-line {
     box-sizing: border-box;
-    width: min(72ch, 100%);
+    width: 100%;
+    max-width: 760px;
+    min-height: 18px;
     margin: 8px 0 0;
     overflow: hidden;
     white-space: nowrap;
+    color: #202124;
+  }
+
+  .progress-current {
     color: #3c4043;
+  }
+
+  .job-progress {
+    width: 100%;
+    max-width: 760px;
+    margin-top: 8px;
+    display: grid;
+    gap: 4px;
+  }
+
+  .job-progress-bar {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #e8edf5;
+  }
+
+  .job-progress-bar span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: #1a73e8;
+  }
+
+  .job-progress > span {
+    color: #5f6368;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
   }
 
   .job-log {

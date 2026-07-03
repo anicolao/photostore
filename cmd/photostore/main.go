@@ -247,7 +247,7 @@ func progress(verbose bool) photostore.ProgressFunc {
 		return nil
 	}
 	return func(message string) {
-		fmt.Fprintln(os.Stderr, message)
+		fmt.Fprintln(os.Stderr, photostore.ProgressMessageText(message))
 	}
 }
 

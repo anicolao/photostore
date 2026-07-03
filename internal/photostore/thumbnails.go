@@ -81,17 +81,20 @@ func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) Th
 		wg.Wait()
 		close(results)
 	}()
+	processedGroups := 0
 	for result := range results {
 		count := len(result.Group.Files)
 		file := result.Group.Files[0]
+		processedGroups++
 		if result.Err != nil {
 			summary.Failed += count
 			summary.Issues = append(summary.Issues, thumbnailIssue(file, result.Err))
-			progressf(progress, "thumbnail unavailable for %s (%s; object %s): %v", file.Filename, thumbnailSourceLabel(file), file.StoredObjectID, result.Err)
+			progressCountf(progress, processedGroups, len(groups), "thumbnail unavailable for %s (%s; object %s): %v", file.Filename, thumbnailSourceLabel(file), file.StoredObjectID, result.Err)
 			continue
 		}
 		if result.Existing {
 			summary.Existing += count
+			progressCountf(progress, processedGroups, len(groups), "thumbnail already present for %s", file.Filename)
 			continue
 		}
 		if result.Generated {
@@ -99,7 +102,7 @@ func (s *Store) EnsureThumbnailsForScan(scanID string, progress ProgressFunc) Th
 			if count > 1 {
 				summary.Existing += count - 1
 			}
-			progressf(progress, "thumbnail generated for %s", file.Filename)
+			progressCountf(progress, processedGroups, len(groups), "thumbnail generated for %s", file.Filename)
 		}
 	}
 	progressf(progress, "thumbnails generated: %d, already present: %d, unavailable: %d", summary.Generated, summary.Existing, summary.Failed)

@@ -71,7 +71,6 @@ func (s *Store) RefreshMissingMetadata(progress ProgressFunc) (MetadataRefreshSu
 		go func() {
 			defer wg.Done()
 			for candidate := range jobs {
-				progressf(progress, "extracting metadata for %s", candidate.StoredObjectID)
 				result, err := s.recordMetadataForCandidate(candidate, &requestEventID)
 				results <- metadataCandidateResult{Result: result, Err: err}
 			}
@@ -86,23 +85,30 @@ func (s *Store) RefreshMissingMetadata(progress ProgressFunc) (MetadataRefreshSu
 		close(results)
 	}()
 	var firstErr error
+	processed := 0
 	for candidateResult := range results {
+		processed++
 		summary.Attempted++
 		if candidateResult.Err != nil {
 			if firstErr == nil {
 				firstErr = candidateResult.Err
 			}
+			progressCountf(progress, processed, len(candidates), "metadata refresh failed: %v", candidateResult.Err)
 			continue
 		}
 		switch candidateResult.Result {
 		case "extracted":
 			summary.Extracted++
+			progressCountf(progress, processed, len(candidates), "metadata extracted")
 		case "failed":
 			summary.Failed++
+			progressCountf(progress, processed, len(candidates), "metadata extraction failed")
 		case "issue":
 			summary.Issues++
+			progressCountf(progress, processed, len(candidates), "metadata issue detected")
 		default:
 			summary.Skipped++
+			progressCountf(progress, processed, len(candidates), "metadata already present")
 		}
 	}
 	if firstErr != nil {

@@ -24,6 +24,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestCloneJobSerializesEmptyProgressArray(t *testing.T) {
+	job := cloneJob(&Job{JobID: "job_test", Kind: "source_scan", Status: "running", StartedAtMS: 1710504000000})
+	raw, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"progress":null`) {
+		t.Fatalf("job JSON has null progress: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"progress":[]`) {
+		t.Fatalf("job JSON missing empty progress array: %s", raw)
+	}
+}
+
 func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")

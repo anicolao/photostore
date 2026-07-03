@@ -129,6 +129,8 @@ export type Job = {
   result_ref: string | null;
   error: string | null;
   progress: string[];
+  progress_current: number | null;
+  progress_total: number | null;
 };
 
 export type ServerEvent = {
