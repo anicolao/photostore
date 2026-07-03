@@ -1140,6 +1140,9 @@ func (s *Store) materialize(objID, acquiredKey, ref string) error {
 		return nil
 	}
 	if err := os.Link(src, dst); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
 		return err
 	}
 	if err := chmodCompleteFile(dst); err != nil {
