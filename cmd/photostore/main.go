@@ -230,7 +230,7 @@ func run(args []string) error {
 			return err
 		}
 		defer st.Close()
-		srv := photostore.NewServer(st, photostore.ServerOptions{APIOnly: *apiOnly})
+		srv := photostore.NewServer(st, photostore.ServerOptions{APIOnly: *apiOnly, ListenAddr: *addr})
 		fmt.Fprintf(os.Stderr, "photostore serving http://%s\n", *addr)
 		return http.ListenAndServe(*addr, srv)
 	default:

@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,12 +29,14 @@ var fallbackStatic embed.FS
 
 type ServerOptions struct {
 	APIOnly     bool
+	ListenAddr  string
 	ScanOptions ScanOptions
 }
 
 type Server struct {
 	store       *Store
 	apiOnly     bool
+	allowedHost string
 	scanOptions ScanOptions
 	mux         *http.ServeMux
 	mu          sync.Mutex
@@ -66,6 +70,7 @@ func NewServer(store *Store, opts ServerOptions) http.Handler {
 	s := &Server{
 		store:       store,
 		apiOnly:     opts.APIOnly,
+		allowedHost: normalizeHost(opts.ListenAddr),
 		scanOptions: serverScanOptions(opts.ScanOptions),
 		mux:         http.NewServeMux(),
 		jobs:        map[string]*Job{},
@@ -89,7 +94,47 @@ func serverScanOptions(opts ScanOptions) ScanOptions {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !s.hostAllowed(r.Host) {
+		writeErrorStatus(w, http.StatusForbidden, errors.New("host is not allowed"))
+		return
+	}
+	if isMutatingAPIRequest(r) && !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeErrorStatus(w, http.StatusUnsupportedMediaType, errors.New("content-type must be application/json"))
+		return
+	}
 	s.mux.ServeHTTP(w, r)
+}
+
+func (s *Server) hostAllowed(host string) bool {
+	if s.allowedHost == "" {
+		return true
+	}
+	return normalizeHost(host) == s.allowedHost
+}
+
+func normalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return ""
+	}
+	if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
+		return net.JoinHostPort(strings.ToLower(parsedHost), parsedPort)
+	}
+	return host
+}
+
+func isMutatingAPIRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return strings.HasPrefix(r.URL.Path, "/api/")
+	default:
+		return false
+	}
+}
+
+func isJSONContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && strings.EqualFold(mediaType, "application/json")
 }
 
 func (s *Server) routes() {
@@ -575,6 +620,10 @@ func parseProgressMessage(message string) (string, *int, *int) {
 }
 
 func (s *Server) handleEventWebSocket(w http.ResponseWriter, r *http.Request) {
+	if !s.websocketOriginAllowed(r) {
+		writeErrorStatus(w, http.StatusForbidden, errors.New("websocket origin is not allowed"))
+		return
+	}
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		writeErrorStatus(w, http.StatusBadRequest, errors.New("websocket upgrade is required"))
 		return
@@ -607,6 +656,32 @@ func (s *Server) handleEventWebSocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func (s *Server) websocketOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	originHost, _ := splitHostPort(parsed.Host)
+	requestHost, _ := splitHostPort(r.Host)
+	return strings.EqualFold(originHost, requestHost) && s.hostAllowed(r.Host)
+}
+
+func splitHostPort(host string) (string, string) {
+	host = normalizeHost(host)
+	parsedHost, parsedPort, err := net.SplitHostPort(host)
+	if err == nil {
+		return parsedHost, parsedPort
+	}
+	return host, ""
 }
 
 func (s *Server) allJobs() []*Job {
