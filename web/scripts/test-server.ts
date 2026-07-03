@@ -10,7 +10,8 @@ const env = {
   PHOTOSTORE_API_BASE: `http://${apiAddr}`,
   PHOTOSTORE_E2E_STORE: store,
   PHOTOSTORE_DETERMINISTIC_IDS: '1',
-  PHOTOSTORE_FIXED_NOW_MS: '1710504000000'
+  PHOTOSTORE_FIXED_NOW_MS: '1710504000000',
+  PHOTOSTORE_SCAN_WORKERS: '1'
 };
 
 const children: ReturnType<typeof spawn>[] = [];

@@ -125,7 +125,7 @@ func run(args []string) error {
 	case "scan":
 		fs := flag.NewFlagSet("scan", flag.ExitOnError)
 		storePath := fs.String("store", "./photostore-data", "store path")
-		_ = fs.Int("workers", 0, "accepted for compatibility; acquisition is currently serialized")
+		workers := fs.Int("workers", 0, "parallel acquisition workers; defaults to a bounded CPU-based value")
 		verbose := fs.Bool("verbose", false, "print progress and final report")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
@@ -135,7 +135,7 @@ func run(args []string) error {
 			return err
 		}
 		defer st.Close()
-		scanID, err := st.ScanSources(progress(*verbose))
+		scanID, err := st.ScanSourcesWithOptions(progress(*verbose), photostore.ScanOptions{Workers: *workers})
 		if err != nil {
 			return err
 		}

@@ -470,10 +470,25 @@ func (s *Store) photoDateBuckets(kind, prefix string) ([]PhotoDateBucket, error)
 
 func (s *Store) photosForCaptureDate(captureDate string) ([]DatedPhotoProjection, error) {
 	rows, err := s.DB.Query(`
-		select stored_object_id, content_ref, filename, relative_path, capture_date, capture_time_local, utc_offset, precision
-		from photo_capture_times
-		where capture_date = ?
-		order by capture_time_local, filename`, captureDate)
+		with representative_paths as (
+			select scl.content_ref, min(so.relative_path) as relative_path
+			from source_content_links scl
+			join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+			group by scl.content_ref
+		),
+		representatives as (
+			select scl.content_ref, min(so.stored_object_id) as stored_object_id, rp.relative_path
+			from representative_paths rp
+			join source_content_links scl on scl.content_ref = rp.content_ref
+			join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+				and so.relative_path = rp.relative_path
+			group by scl.content_ref, rp.relative_path
+		)
+		select rep.stored_object_id, pct.content_ref, rep.relative_path, pct.capture_date, pct.capture_time_local, pct.utc_offset, pct.precision
+		from photo_capture_times pct
+		join representatives rep on rep.content_ref = pct.content_ref
+		where pct.capture_date = ?
+		order by pct.capture_time_local, rep.relative_path`, captureDate)
 	if err != nil {
 		return nil, err
 	}
@@ -481,9 +496,10 @@ func (s *Store) photosForCaptureDate(captureDate string) ([]DatedPhotoProjection
 	var photos []DatedPhotoProjection
 	for rows.Next() {
 		var photo DatedPhotoProjection
-		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.Filename, &photo.RelativePath, &photo.CaptureDate, &photo.CaptureTimeLocal, &photo.UTCOffset, &photo.Precision); err != nil {
+		if err := rows.Scan(&photo.StoredObjectID, &photo.ContentRef, &photo.RelativePath, &photo.CaptureDate, &photo.CaptureTimeLocal, &photo.UTCOffset, &photo.Precision); err != nil {
 			return nil, err
 		}
+		photo.Filename = filepath.Base(photo.RelativePath)
 		photo.ViewURL = "/objects/" + photo.StoredObjectID
 		photo.BytesURL = "/api/objects/" + photo.StoredObjectID + "/bytes"
 		photo.ThumbnailURL = "/api/objects/" + photo.StoredObjectID + "/thumbnail"
