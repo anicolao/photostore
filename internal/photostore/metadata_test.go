@@ -73,6 +73,14 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	if strings.Contains(fieldsJSON, "parsed") {
 		t.Fatalf("metadata event contains parsed reducer data: %s", fieldsJSON)
 	}
+	metadataEvent := latestEventOfType(t, st, "PhotoMetadataExtracted")
+	context := mapValue(metadataEvent.Payload["extraction_context"])
+	if got := str(context["phase"]); got != "ingestion_scan" {
+		t.Fatalf("metadata extraction phase = %q, want ingestion_scan", got)
+	}
+	if got := str(context["source_kind"]); got != "source_root" {
+		t.Fatalf("metadata extraction source kind = %q, want source_root", got)
+	}
 	var captureDate string
 	var captureTime string
 	var offset string
@@ -205,6 +213,118 @@ func TestRefreshMissingMetadataRecordsFailureOnce(t *testing.T) {
 	}
 }
 
+func TestRefreshMissingMetadataRecordsRefreshContext(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	content := jpegWithEXIF(t, map[uint16]string{
+		0x010f: "Canon",
+		0x0110: "EOS 5D",
+		0x9003: "2012:07:04 18:22:11",
+	})
+	objID := "obj_manual"
+	occID := "occ_manual"
+	scanID := "scan_manual"
+	key := filepath.Join("objects", "acquired", objID)
+	mustWrite(t, filepath.Join(st.Root, key), content)
+	ref := contentRef(sha(content), int64(len(content)))
+	if err := st.appendEvent("SourceFileAcquired", nil, &scanID, map[string]any{
+		"scan_id":              scanID,
+		"source_occurrence_id": occID,
+		"stored_object_id":     objID,
+		"purpose":              "source_media",
+		"content_ref":          ref,
+		"source_kind":          "source_root",
+		"path":                 "/missing/A.JPG",
+		"relative_path":        "A.JPG",
+		"acquired_storage_key": filepath.ToSlash(key),
+		"storage_disposition": map[string]any{
+			"cas_existed_at_ingest":    false,
+			"acquired_object_retained": true,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := st.RefreshMissingMetadata(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Extracted != 1 {
+		t.Fatalf("summary extracted = %d, want 1", summary.Extracted)
+	}
+	metadataEvent := latestEventOfType(t, st, "PhotoMetadataExtracted")
+	context := mapValue(metadataEvent.Payload["extraction_context"])
+	if got := str(context["phase"]); got != "metadata_refresh_missing" {
+		t.Fatalf("metadata extraction phase = %q, want metadata_refresh_missing", got)
+	}
+	if got := str(context["source_kind"]); got != "source_root" {
+		t.Fatalf("metadata extraction source kind = %q, want source_root", got)
+	}
+}
+
+func TestMetadataMismatchDetectedForDuplicateContentObservation(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	contentRef := "sha256:v1:12:existing"
+	scanID := "scan_manual"
+	if err := st.appendEvent("PhotoMetadataExtracted", nil, &scanID, map[string]any{
+		"stored_object_id":     "obj_existing",
+		"source_occurrence_id": "occ_existing",
+		"scan_id":              scanID,
+		"content_ref":          contentRef,
+		"extractor":            metadataExtractorPayload(),
+		"extraction_context": map[string]any{
+			"phase":       "ingestion_scan",
+			"source_kind": "source_root",
+		},
+		"extracted_at_ms": nowMS(),
+		"fields": map[string]map[string]string{
+			"make": {"raw": "Canon"},
+		},
+		"warnings": []string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.Join("objects", "acquired", "obj_observed")
+	mustWrite(t, filepath.Join(st.Root, key), jpegWithEXIF(t, map[uint16]string{
+		0x010f: "Nikon",
+		0x9003: "2012:07:04 18:22:11",
+	}))
+
+	result, err := st.recordMetadataForCandidate(metadataCandidate{
+		StoredObjectID:     "obj_observed",
+		SourceOccurrenceID: "occ_observed",
+		ScanID:             scanID,
+		ContentRef:         contentRef,
+		StorageKey:         filepath.ToSlash(key),
+		SourceKind:         "source_root",
+		Phase:              "ingestion_scan",
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "issue" {
+		t.Fatalf("metadata result = %q, want issue", result)
+	}
+	var issues int
+	if err := st.DB.QueryRow(`select count(*) from metadata_issues where content_ref = ?`, contentRef).Scan(&issues); err != nil {
+		t.Fatal(err)
+	}
+	if issues != 1 {
+		t.Fatalf("metadata issues = %d, want 1", issues)
+	}
+}
+
 func jpegWithEXIF(t *testing.T, fields map[uint16]string) []byte {
 	t.Helper()
 	base := testJPEG(t)
@@ -216,6 +336,21 @@ func jpegWithEXIF(t *testing.T, fields map[uint16]string) []byte {
 	out = append(out, payload...)
 	out = append(out, base[2:]...)
 	return out
+}
+
+func latestEventOfType(t *testing.T, st *Store, eventType string) Event {
+	t.Helper()
+	events, err := st.RecentEvents(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].EventType == eventType {
+			return events[i]
+		}
+	}
+	t.Fatalf("event %s not found", eventType)
+	return Event{}
 }
 
 func exifPayload(t *testing.T, fields map[uint16]string) []byte {

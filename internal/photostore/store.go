@@ -1114,7 +1114,7 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 			report.ContentAddressesMaterialized++
 		})
 	}
-	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key)); err != nil {
+	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key), sourceKind); err != nil {
 		s.contentMu.Unlock()
 		return err
 	}
