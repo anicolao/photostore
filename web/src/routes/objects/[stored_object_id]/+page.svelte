@@ -42,8 +42,8 @@
   }
 
   function captureDateLabel(fields: ObjectMetadata['fields']) {
-    const raw = rawField(fields, 'datetime_original') || rawField(fields, 'create_date') || rawField(fields, 'modify_date');
-    if (!raw) return 'Unknown date';
+    const raw = rawField(fields, 'datetime_original');
+    if (!raw) return 'No DateTimeOriginal';
     const match = raw.match(/^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
     if (!match) return raw;
     const [, year, month, day, hour, minute, second] = match;
