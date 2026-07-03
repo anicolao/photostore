@@ -76,7 +76,8 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	var captureDate string
 	var captureTime string
 	var offset string
-	if err := st.DB.QueryRow(`select capture_date, capture_time_local, utc_offset from photo_capture_times`).Scan(&captureDate, &captureTime, &offset); err != nil {
+	var captureSourceKind string
+	if err := st.DB.QueryRow(`select capture_date, capture_time_local, utc_offset, source_kind from photo_capture_times`).Scan(&captureDate, &captureTime, &offset, &captureSourceKind); err != nil {
 		t.Fatal(err)
 	}
 	if captureDate != "2012-07-04" {
@@ -87,6 +88,9 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	}
 	if offset != "-04:00" {
 		t.Fatalf("capture offset = %q, want EXIF offset", offset)
+	}
+	if captureSourceKind != "exif_datetime_original" {
+		t.Fatalf("capture source kind = %q, want exif_datetime_original", captureSourceKind)
 	}
 
 	years, err := st.PhotoYears()
@@ -102,6 +106,45 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	}
 	if len(photos.Photos) != 1 || photos.Photos[0].Filename != "A.JPG" {
 		t.Fatalf("dated photos = %#v, want representative A.JPG", photos.Photos)
+	}
+}
+
+func TestCaptureTimeDoesNotFallBackToCreateOrModifyDate(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	jpegBytes := jpegWithEXIF(t, map[uint16]string{
+		0x9004: "2013:08:05 12:30:00",
+		0x0132: "2014:09:06 13:31:01",
+	})
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), jpegBytes)
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSources(nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var captureRows int
+	if err := st.DB.QueryRow(`select count(*) from photo_capture_times`).Scan(&captureRows); err != nil {
+		t.Fatal(err)
+	}
+	if captureRows != 0 {
+		t.Fatalf("capture time rows = %d, want 0 without DateTimeOriginal", captureRows)
+	}
+	undated, err := st.UndatedPhotos()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(undated.Photos) != 1 || undated.Photos[0].Filename != "A.JPG" {
+		t.Fatalf("undated photos = %#v, want A.JPG", undated.Photos)
 	}
 }
 
