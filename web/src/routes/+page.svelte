@@ -598,7 +598,7 @@
 
   .progress-current {
     box-sizing: border-box;
-    width: min(60ch, 100%);
+    width: min(72ch, 100%);
     margin: 8px 0 0;
     overflow: hidden;
     white-space: nowrap;
