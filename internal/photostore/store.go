@@ -28,6 +28,7 @@ import (
 )
 
 const schemaVersion = 1
+const progressCountPrefix = "\x1fphotostore-progress-count\x1f"
 
 var deterministicIDCounter atomic.Uint64
 
@@ -1595,6 +1596,24 @@ func progressf(progress ProgressFunc, format string, args ...any) {
 	if progress != nil {
 		progress(fmt.Sprintf(format, args...))
 	}
+}
+
+func progressCountf(progress ProgressFunc, current, total int, format string, args ...any) {
+	if progress != nil {
+		progress(fmt.Sprintf("%s%d/%d\x1f%s", progressCountPrefix, current, total, fmt.Sprintf(format, args...)))
+	}
+}
+
+func ProgressMessageText(message string) string {
+	if !strings.HasPrefix(message, progressCountPrefix) {
+		return message
+	}
+	rest := strings.TrimPrefix(message, progressCountPrefix)
+	parts := strings.SplitN(rest, "\x1f", 2)
+	if len(parts) != 2 {
+		return message
+	}
+	return parts[1]
 }
 
 func newID(prefix string) string {

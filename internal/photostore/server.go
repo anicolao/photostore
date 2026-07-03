@@ -43,14 +43,16 @@ type Server struct {
 }
 
 type Job struct {
-	JobID        string   `json:"job_id"`
-	Kind         string   `json:"kind"`
-	Status       string   `json:"status"`
-	StartedAtMS  int64    `json:"started_at_ms"`
-	FinishedAtMS *int64   `json:"finished_at_ms"`
-	ResultRef    *string  `json:"result_ref"`
-	Error        *string  `json:"error"`
-	Progress     []string `json:"progress"`
+	JobID           string   `json:"job_id"`
+	Kind            string   `json:"kind"`
+	Status          string   `json:"status"`
+	StartedAtMS     int64    `json:"started_at_ms"`
+	FinishedAtMS    *int64   `json:"finished_at_ms"`
+	ResultRef       *string  `json:"result_ref"`
+	Error           *string  `json:"error"`
+	Progress        []string `json:"progress"`
+	ProgressCurrent *int     `json:"progress_current"`
+	ProgressTotal   *int     `json:"progress_total"`
 }
 
 type ServerEvent struct {
@@ -485,8 +487,13 @@ func (s *Server) startJob(kind string, work func(ProgressFunc) (string, error)) 
 	s.broadcast(ServerEvent{Type: "job_started", Job: copyJob})
 	go func() {
 		progress := func(message string) {
+			displayMessage, current, total := parseProgressMessage(message)
 			s.jobsMu.Lock()
-			job.Progress = append(job.Progress, message)
+			job.Progress = append(job.Progress, displayMessage)
+			if current != nil && total != nil {
+				job.ProgressCurrent = current
+				job.ProgressTotal = total
+			}
 			copyJob := cloneJob(job)
 			s.jobsMu.Unlock()
 			s.broadcast(ServerEvent{Type: "job_progress", Job: copyJob})
@@ -533,8 +540,38 @@ func (s *Server) job(id string) (*Job, bool) {
 
 func cloneJob(job *Job) *Job {
 	copyJob := *job
-	copyJob.Progress = append([]string(nil), job.Progress...)
+	copyJob.Progress = append([]string{}, job.Progress...)
+	if job.ProgressCurrent != nil {
+		current := *job.ProgressCurrent
+		copyJob.ProgressCurrent = &current
+	}
+	if job.ProgressTotal != nil {
+		total := *job.ProgressTotal
+		copyJob.ProgressTotal = &total
+	}
 	return &copyJob
+}
+
+func parseProgressMessage(message string) (string, *int, *int) {
+	if !strings.HasPrefix(message, progressCountPrefix) {
+		return message, nil, nil
+	}
+	displayMessage := ProgressMessageText(message)
+	rest := strings.TrimPrefix(message, progressCountPrefix)
+	parts := strings.SplitN(rest, "\x1f", 2)
+	if len(parts) != 2 {
+		return message, nil, nil
+	}
+	counts := strings.SplitN(parts[0], "/", 2)
+	if len(counts) != 2 {
+		return displayMessage, nil, nil
+	}
+	current, errCurrent := strconv.Atoi(counts[0])
+	total, errTotal := strconv.Atoi(counts[1])
+	if errCurrent != nil || errTotal != nil || total < 0 || current < 0 {
+		return displayMessage, nil, nil
+	}
+	return displayMessage, &current, &total
 }
 
 func (s *Server) handleEventWebSocket(w http.ResponseWriter, r *http.Request) {

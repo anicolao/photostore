@@ -93,7 +93,6 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 		go func() {
 			defer wg.Done()
 			for candidate := range jobs {
-				progressf(progress, "verifying duplicate %s", candidate.StoredObjectID)
 				result, method, err := s.verifyAndDeduplicateCandidate(candidate)
 				results <- dedupCandidateResult{
 					Candidate: candidate,
@@ -113,16 +112,18 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 		close(results)
 	}()
 	var appendErr error
+	processed := 0
 	for candidateResult := range results {
+		processed++
 		candidate := candidateResult.Candidate
 		if candidateResult.Err != nil {
 			var relinkErr dedupRelinkError
 			if errors.As(candidateResult.Err, &relinkErr) {
 				summary.RelinkErrors++
-				progressf(progress, "duplicate relink failed for %s: %v", candidate.StoredObjectID, candidateResult.Err)
+				progressCountf(progress, processed, summary.Candidates, "duplicate relink failed for %s: %v", candidate.StoredObjectID, candidateResult.Err)
 			} else {
 				summary.VerificationErrors++
-				progressf(progress, "duplicate verification failed for %s: %v", candidate.StoredObjectID, candidateResult.Err)
+				progressCountf(progress, processed, summary.Candidates, "duplicate verification failed for %s: %v", candidate.StoredObjectID, candidateResult.Err)
 			}
 			continue
 		}
@@ -154,7 +155,7 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 		}
 		summary.Deduplicated++
 		summary.BytesReleased += candidateResult.Result.Size
-		progressf(progress, "deduplicated %s (%d bytes via %s)", candidate.StoredObjectID, candidateResult.Result.Size, candidateResult.Method)
+		progressCountf(progress, processed, summary.Candidates, "deduplicated %s (%d bytes via %s)", candidate.StoredObjectID, candidateResult.Result.Size, candidateResult.Method)
 	}
 	if appendErr != nil {
 		return summary, appendErr
