@@ -26,6 +26,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     description: 'The initialized store dashboard starts empty.',
     verifications: [
       { spec: 'Photostore heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Photostore' })).toBeVisible() },
+      { spec: 'UI build hash is visible', check: async () => await expect(page.getByTestId('ui-build-hash')).toHaveText('UI e2e-build') },
       { spec: 'Source count is zero', check: async () => await expect(page.getByTestId('source-count')).toHaveText('0') },
       { spec: 'Recent scans empty state is visible', check: async () => await expect(page.getByTestId('scans-empty')).toBeVisible() }
     ]
