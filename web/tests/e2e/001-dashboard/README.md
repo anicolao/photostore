@@ -31,6 +31,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 **Verifications:**
 - [x] Scan job completed
 - [x] Latest progress message is visible
+- [x] Latest progress message is capped at 60 visible characters
 - [x] Full job log is hidden by default
 - [x] Source last scan is no longer Never
 - [x] Source scan button is re-enabled
@@ -45,7 +46,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 **Verifications:**
 - [x] Completed job status is restored
-- [x] Thumbnail summary remains visible
+- [x] Thumbnail summary remains available on the compact progress line
 
 ---
 

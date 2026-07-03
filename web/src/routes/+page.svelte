@@ -265,6 +265,17 @@
     return job.progress.at(-1) ?? 'Waiting for progress...';
   }
 
+  function elideMiddle(value: string, maxLength = 60) {
+    if (value.length <= maxLength) {
+      return value;
+    }
+    const marker = '...';
+    const remaining = maxLength - marker.length;
+    const head = Math.ceil(remaining / 2);
+    const tail = Math.floor(remaining / 2);
+    return `${value.slice(0, head)}${marker}${value.slice(value.length - tail)}`;
+  }
+
   onMount(() => {
     load();
     connectEvents();
@@ -375,7 +386,8 @@
       </div>
       {#if activeJob}
         <p data-testid="job-status">{activeJob.kind}: {activeJob.status}</p>
-        <p class="progress-current" data-testid="job-latest-progress">{latestProgress(activeJob)}</p>
+        {@const progressMessage = latestProgress(activeJob)}
+        <p class="progress-current" data-testid="job-latest-progress" title={progressMessage} aria-label={progressMessage}>{elideMiddle(progressMessage)}</p>
         {#if activeJob.error}<p class="error">{activeJob.error}</p>{/if}
         {#if jobLogOpen}
           <div class="job-log" data-testid="job-log" role="log" aria-label="Job progress log">
@@ -585,9 +597,10 @@
   }
 
   .progress-current {
+    box-sizing: border-box;
+    width: min(60ch, 100%);
     margin: 8px 0 0;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     color: #3c4043;
   }

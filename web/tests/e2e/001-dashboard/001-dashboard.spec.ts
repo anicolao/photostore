@@ -58,6 +58,13 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     verifications: [
       { spec: 'Scan job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('completed', { timeout: 10_000 }) },
       { spec: 'Latest progress message is visible', check: async () => await expect(page.getByTestId('job-latest-progress')).toBeVisible() },
+      {
+        spec: 'Latest progress message is capped at 60 visible characters',
+        check: async () => {
+          const text = await page.getByTestId('job-latest-progress').innerText();
+          expect(text.length).toBeLessThanOrEqual(60);
+        }
+      },
       { spec: 'Full job log is hidden by default', check: async () => await expect(page.getByTestId('job-log')).toHaveCount(0) },
       { spec: 'Source last scan is no longer Never', check: async () => await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never') },
       { spec: 'Source scan button is re-enabled', check: async () => await expect(page.getByTestId('source-list').getByRole('button', { name: 'Scan' })).toBeEnabled() },
@@ -71,7 +78,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     description: 'Reloading the dashboard restores the latest completed job status and thumbnail summary.',
     verifications: [
       { spec: 'Completed job status is restored', check: async () => await expect(page.getByTestId('job-status')).toContainText('completed') },
-      { spec: 'Thumbnail summary remains visible', check: async () => await expect(page.getByTestId('job-latest-progress')).toContainText('thumbnails generated') }
+      { spec: 'Thumbnail summary remains available on the compact progress line', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /thumbnails generated/) }
     ]
   });
 
@@ -80,7 +87,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     description: 'The dashboard verifies retained duplicates and releases duplicate bytes.',
     verifications: [
       { spec: 'Deduplication job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('duplicate_deduplication: completed', { timeout: 10_000 }) },
-      { spec: 'Deduplication progress reports released bytes', check: async () => await expect(page.getByTestId('job-latest-progress')).toContainText('bytes released') },
+      { spec: 'Deduplication progress reports released bytes', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /bytes released/) },
       { spec: 'Retained duplicate bytes drop to zero', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('0') },
       { spec: 'Deduplicate button disables when no duplicate bytes remain', check: async () => await expect(page.getByTestId('deduplicate-duplicates')).toBeDisabled() }
     ]
@@ -215,7 +222,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     description: 'The dashboard can trigger a metadata refresh for photos without recorded metadata results.',
     verifications: [
       { spec: 'Metadata refresh job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('metadata_refresh_missing: completed', { timeout: 10_000 }) },
-      { spec: 'Metadata refresh reports no missing work after scan-time extraction', check: async () => await expect(page.getByTestId('job-latest-progress')).toContainText('metadata refresh attempted: 0') }
+      { spec: 'Metadata refresh reports no missing work after scan-time extraction', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /metadata refresh attempted: 0/) }
     ]
   });
 
