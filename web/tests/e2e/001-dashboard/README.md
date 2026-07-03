@@ -8,6 +8,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 **Verifications:**
 - [x] Photostore heading is visible
+- [x] UI build hash is visible
 - [x] Source count is zero
 - [x] Recent scans empty state is visible
 
