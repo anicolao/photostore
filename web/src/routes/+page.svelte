@@ -582,7 +582,7 @@
 
   .grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 16px;
   }
 
@@ -642,7 +642,6 @@
     margin: 8px 0 0;
     overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
     color: #202124;
   }
 
