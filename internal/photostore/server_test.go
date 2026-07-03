@@ -4,17 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"database/sql"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,7 +228,7 @@ func TestServerRequiresJSONContentTypeForMutations(t *testing.T) {
 	}
 }
 
-func TestServerJobEventsWebSocketStreamsSnapshotAndProgress(t *testing.T) {
+func TestServerJobEventsStreamSendsSnapshotAndProgress(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
 	sourcePath := filepath.Join(root, "source")
@@ -248,9 +243,9 @@ func TestServerJobEventsWebSocketStreamsSnapshotAndProgress(t *testing.T) {
 	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
 	defer ts.Close()
 
-	conn, reader := dialEventWebSocket(t, ts.URL)
-	defer conn.Close()
-	initial := readWebSocketEvent(t, conn, reader)
+	res, reader := openEventStream(t, ts.URL, "")
+	defer res.Body.Close()
+	initial := readSSEEvent(t, res, reader)
 	if initial.Type != "job_snapshot" {
 		t.Fatalf("initial event type = %q, want job_snapshot", initial.Type)
 	}
@@ -261,7 +256,7 @@ func TestServerJobEventsWebSocketStreamsSnapshotAndProgress(t *testing.T) {
 
 	progressSeen := false
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
-		event := readWebSocketEvent(t, conn, reader)
+		event := readSSEEvent(t, res, reader)
 		if event.Type == "job_progress" && event.Job != nil && event.Job.JobID == started.JobID && len(event.Job.Progress) > 0 {
 			progressSeen = true
 		}
@@ -275,7 +270,7 @@ func TestServerJobEventsWebSocketStreamsSnapshotAndProgress(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("timed out waiting for websocket job_finished event")
+	t.Fatal("timed out waiting for event stream job_finished event")
 }
 
 func TestServerJobsIncludePersistedScanJobsAfterRestart(t *testing.T) {
@@ -365,45 +360,31 @@ func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
 	}
 }
 
-func dialEventWebSocket(t *testing.T, baseURL string) (net.Conn, *bufio.Reader) {
+func openEventStream(t *testing.T, baseURL, origin string) (*http.Response, *bufio.Reader) {
 	t.Helper()
-	return dialEventWebSocketWithOrigin(t, baseURL, "")
-}
-
-func dialEventWebSocketWithOrigin(t *testing.T, baseURL, origin string) (net.Conn, *bufio.Reader) {
-	t.Helper()
-	parsed, err := url.Parse(baseURL)
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/events/stream", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := net.Dial("tcp", parsed.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key := base64.StdEncoding.EncodeToString([]byte("photostore-test!"))
-	originHeader := ""
 	if origin != "" {
-		originHeader = "Origin: " + origin + "\r\n"
+		req.Header.Set("Origin", origin)
 	}
-	if _, err := io.WriteString(conn, "GET /api/events/ws HTTP/1.1\r\nHost: "+parsed.Host+"\r\n"+originHeader+"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "+key+"\r\n\r\n"); err != nil {
-		conn.Close()
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(conn)
-	res, err := http.ReadResponse(reader, nil)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		conn.Close()
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusSwitchingProtocols {
-		conn.Close()
-		t.Fatalf("websocket upgrade status = %d, want 101", res.StatusCode)
+	if res.StatusCode != http.StatusOK {
+		res.Body.Close()
+		t.Fatalf("event stream status = %d, want 200", res.StatusCode)
 	}
-	return conn, reader
+	if got := res.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		res.Body.Close()
+		t.Fatalf("event stream content type = %q, want text/event-stream", got)
+	}
+	return res, bufio.NewReader(res.Body)
 }
 
-func TestServerRejectsCrossOriginWebSocket(t *testing.T) {
+func TestServerRejectsCrossOriginEventStream(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {
 		t.Fatal(err)
@@ -412,80 +393,62 @@ func TestServerRejectsCrossOriginWebSocket(t *testing.T) {
 	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
 	defer ts.Close()
 
-	parsed, err := url.Parse(ts.URL)
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/events/stream", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := net.Dial("tcp", parsed.Host)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	key := base64.StdEncoding.EncodeToString([]byte("photostore-test!"))
-	if _, err := io.WriteString(conn, "GET /api/events/ws HTTP/1.1\r\nHost: "+parsed.Host+"\r\nOrigin: http://evil.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "+key+"\r\n\r\n"); err != nil {
-		t.Fatal(err)
-	}
-	reader := bufio.NewReader(conn)
-	res, err := http.ReadResponse(reader, nil)
+	req.Header.Set("Origin", "http://evil.test")
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("cross-origin websocket status = %d, want 403", res.StatusCode)
+		t.Fatalf("cross-origin event stream status = %d, want 403", res.StatusCode)
 	}
 }
 
-func readWebSocketEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) ServerEvent {
+func readSSEEvent(t *testing.T, res *http.Response, reader *bufio.Reader) ServerEvent {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatal(err)
+	type result struct {
+		event ServerEvent
+		err   error
 	}
-	payload := readWebSocketFrame(t, reader)
-	var event ServerEvent
-	if err := json.Unmarshal(payload, &event); err != nil {
-		t.Fatal(err)
-	}
-	return event
-}
-
-func readWebSocketFrame(t *testing.T, reader *bufio.Reader) []byte {
-	t.Helper()
-	first, err := reader.ReadByte()
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := reader.ReadByte()
-	if err != nil {
-		t.Fatal(err)
-	}
-	opcode := first & 0x0f
-	if opcode != 1 {
-		t.Fatalf("websocket opcode = %d, want text", opcode)
-	}
-	if second&0x80 != 0 {
-		t.Fatal("server websocket frame unexpectedly masked")
-	}
-	length := uint64(second & 0x7f)
-	switch length {
-	case 126:
-		var size [2]byte
-		if _, err := io.ReadFull(reader, size[:]); err != nil {
-			t.Fatal(err)
+	done := make(chan result, 1)
+	go func() {
+		var data string
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			line = strings.TrimRight(line, "\r\n")
+			if line == "" {
+				if data == "" {
+					continue
+				}
+				var event ServerEvent
+				err := json.Unmarshal([]byte(data), &event)
+				done <- result{event: event, err: err}
+				return
+			}
+			if strings.HasPrefix(line, "data: ") {
+				data += strings.TrimPrefix(line, "data: ")
+			}
 		}
-		length = uint64(binary.BigEndian.Uint16(size[:]))
-	case 127:
-		var size [8]byte
-		if _, err := io.ReadFull(reader, size[:]); err != nil {
-			t.Fatal(err)
+	}()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
 		}
-		length = binary.BigEndian.Uint64(size[:])
+		return got.event
+	case <-time.After(2 * time.Second):
+		res.Body.Close()
+		t.Fatal("timed out waiting for event stream event")
+		return ServerEvent{}
 	}
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(reader, payload); err != nil {
-		t.Fatal(err)
-	}
-	return payload
 }
 
 func TestServerServesExistingThumbnailWhileDatabaseIsLocked(t *testing.T) {
