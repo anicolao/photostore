@@ -176,6 +176,63 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	}
 }
 
+func TestServerRejectsDisallowedHost(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{ListenAddr: "127.0.0.1:8080"}))
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "evil.test"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("disallowed host status = %d, want 403", res.StatusCode)
+	}
+
+	req, err = http.NewRequest(http.MethodGet, ts.URL+"/api/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "127.0.0.1:8080"
+	res, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("allowed host status = %d, want 200", res.StatusCode)
+	}
+}
+
+func TestServerRequiresJSONContentTypeForMutations(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	res, err := http.Post(ts.URL+"/api/sources", "text/plain", strings.NewReader(`{"path":"/tmp"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("text/plain mutation status = %d, want 415", res.StatusCode)
+	}
+}
+
 func TestServerJobEventsWebSocketStreamsSnapshotAndProgress(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
@@ -310,6 +367,11 @@ func TestServerServesThumbnailPlaceholderWhenGenerationFails(t *testing.T) {
 
 func dialEventWebSocket(t *testing.T, baseURL string) (net.Conn, *bufio.Reader) {
 	t.Helper()
+	return dialEventWebSocketWithOrigin(t, baseURL, "")
+}
+
+func dialEventWebSocketWithOrigin(t *testing.T, baseURL, origin string) (net.Conn, *bufio.Reader) {
+	t.Helper()
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
 		t.Fatal(err)
@@ -319,7 +381,11 @@ func dialEventWebSocket(t *testing.T, baseURL string) (net.Conn, *bufio.Reader) 
 		t.Fatal(err)
 	}
 	key := base64.StdEncoding.EncodeToString([]byte("photostore-test!"))
-	if _, err := io.WriteString(conn, "GET /api/events/ws HTTP/1.1\r\nHost: "+parsed.Host+"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "+key+"\r\n\r\n"); err != nil {
+	originHeader := ""
+	if origin != "" {
+		originHeader = "Origin: " + origin + "\r\n"
+	}
+	if _, err := io.WriteString(conn, "GET /api/events/ws HTTP/1.1\r\nHost: "+parsed.Host+"\r\n"+originHeader+"Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "+key+"\r\n\r\n"); err != nil {
 		conn.Close()
 		t.Fatal(err)
 	}
@@ -335,6 +401,39 @@ func dialEventWebSocket(t *testing.T, baseURL string) (net.Conn, *bufio.Reader) 
 		t.Fatalf("websocket upgrade status = %d, want 101", res.StatusCode)
 	}
 	return conn, reader
+}
+
+func TestServerRejectsCrossOriginWebSocket(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	parsed, err := url.Parse(ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("tcp", parsed.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	key := base64.StdEncoding.EncodeToString([]byte("photostore-test!"))
+	if _, err := io.WriteString(conn, "GET /api/events/ws HTTP/1.1\r\nHost: "+parsed.Host+"\r\nOrigin: http://evil.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: "+key+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	res, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin websocket status = %d, want 403", res.StatusCode)
+	}
 }
 
 func readWebSocketEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) ServerEvent {
