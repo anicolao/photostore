@@ -49,6 +49,104 @@ func TestScanSourcesAcquiresOnlyJPEGs(t *testing.T) {
 	}
 }
 
+func TestOpenReplaysUnappliedEventLogTail(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := sourceRootRegisteredEvent(root, "evt_unapplied_source", "src_unapplied", "unapplied", nowMS()+1)
+	if err := st.writeEvent(ev); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var label string
+	if err := st.DB.QueryRow(`select label from source_roots where source_root_id = ?`, "src_unapplied").Scan(&label); err != nil {
+		t.Fatal(err)
+	}
+	if label != "unapplied" {
+		t.Fatalf("label = %q, want unapplied", label)
+	}
+	var applied int
+	if err := st.DB.QueryRow(`select count(*) from events_applied where event_id = ?`, ev.EventID).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied count = %d, want 1", applied)
+	}
+}
+
+func TestOpenWithoutProjectionCursorReplaysWholeLogToRepairOlderHoles(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := sourceRootRegisteredEvent(root, "evt_unapplied_older", "src_unapplied_older", "older", nowMS()+1)
+	second := sourceRootRegisteredEvent(root, "evt_applied_later", "src_applied_later", "later", nowMS()+2)
+	if err := st.writeEvent(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.writeEvent(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.applyEvent(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`delete from projection_state`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, sourceRootID := range []string{"src_unapplied_older", "src_applied_later"} {
+		var count int
+		if err := st.DB.QueryRow(`select count(*) from source_roots where source_root_id = ?`, sourceRootID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s count = %d, want 1", sourceRootID, count)
+		}
+	}
+}
+
+func sourceRootRegisteredEvent(root, eventID, sourceRootID, label string, recordedAtMS int64) Event {
+	return Event{
+		EventID:       eventID,
+		EventType:     "SourceRootRegistered",
+		SchemaVersion: schemaVersion,
+		RecordedAtMS:  recordedAtMS,
+		Actor:         map[string]any{"type": "test", "id": "store-test"},
+		Payload: map[string]any{
+			"source_root_id": sourceRootID,
+			"label":          label,
+			"root_path":      filepath.Join(root, sourceRootID),
+			"source_type":    "local_directory",
+			"scan_policy": map[string]any{
+				"recursive":            true,
+				"follow_symlinks":      false,
+				"candidate_extensions": []string{".jpg", ".jpeg"},
+			},
+		},
+	}
+}
+
 func TestHistoricalInventoryScanSkipsAlreadySeenHash(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
