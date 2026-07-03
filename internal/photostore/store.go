@@ -1671,7 +1671,7 @@ func ProgressMessageText(message string) string {
 }
 
 func newID(prefix string) string {
-	if os.Getenv("PHOTOSTORE_DETERMINISTIC_IDS") == "1" {
+	if os.Getenv("PHOTOSTORE_DETERMINISTIC_IDS") == "1" && os.Getenv("PHOTOSTORE_ALLOW_DETERMINISTIC_IDS") == "1" {
 		n := deterministicIDCounter.Add(1)
 		return fmt.Sprintf("%s_%012d", prefix, n)
 	}
