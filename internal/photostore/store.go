@@ -148,6 +148,10 @@ func Open(root string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := st.replayUnappliedEvents(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return st, nil
 }
 
@@ -635,6 +639,7 @@ func (s *Store) Report(scanID string) (*ScanReport, error) {
 func (s *Store) initSchema() error {
 	stmts := []string{
 		`create table if not exists events_applied(event_id text primary key, event_type text, recorded_at_ms integer)`,
+		`create table if not exists projection_state(projection_name text primary key, event_id text, recorded_at_ms integer)`,
 		`create table if not exists source_roots(source_root_id text primary key, root_path text unique, label text, source_type text, policy_json text)`,
 		`create table if not exists stored_objects(stored_object_id text primary key, purpose text, acquired_storage_key text, original_path text, first_event_id text)`,
 		`create table if not exists source_content_links(source_occurrence_id text primary key, stored_object_id text, content_ref text, cas_existed_at_ingest integer, acquired_object_retained integer, link_event_id text)`,
@@ -715,6 +720,148 @@ func (s *Store) writeEvent(ev Event) error {
 	return f.Sync()
 }
 
+func (s *Store) replayUnappliedEvents() error {
+	cursorMS, err := s.projectionCursorTimestamp()
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.Root, "events", "events.jsonl")
+	start, err := replayStartOffset(path, cursorMS)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1024), 1024*1024*16)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var ev Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return err
+		}
+		if err := s.applyEvent(ev); err != nil {
+			return err
+		}
+	}
+	return sc.Err()
+}
+
+func (s *Store) projectionCursorTimestamp() (int64, error) {
+	var cursor sql.NullInt64
+	if err := s.DB.QueryRow(`select recorded_at_ms from projection_state where projection_name = ?`, "main").Scan(&cursor); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if !cursor.Valid {
+		return 0, nil
+	}
+	return cursor.Int64, nil
+}
+
+func replayStartOffset(path string, cursorMS int64) (int64, error) {
+	if cursorMS <= 0 {
+		return 0, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := info.Size()
+	if size == 0 {
+		return 0, nil
+	}
+	for distance := int64(1024); ; distance *= 2 {
+		if distance >= size {
+			return 0, nil
+		}
+		probe := size - distance
+		start, err := lineStartAtOrBefore(f, probe)
+		if err != nil {
+			return 0, err
+		}
+		ev, ok, err := firstEventAtOffset(f, start)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			continue
+		}
+		if ev.RecordedAtMS < cursorMS {
+			return start, nil
+		}
+	}
+}
+
+func lineStartAtOrBefore(f *os.File, pos int64) (int64, error) {
+	if pos <= 0 {
+		return 0, nil
+	}
+	buf := make([]byte, 4096)
+	for end := pos + 1; end > 0; {
+		start := end - int64(len(buf))
+		if start < 0 {
+			start = 0
+		}
+		n, err := f.ReadAt(buf[:end-start], start)
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+		for i := n - 1; i >= 0; i-- {
+			if buf[i] == '\n' {
+				return start + int64(i) + 1, nil
+			}
+		}
+		if start == 0 {
+			return 0, nil
+		}
+		end = start
+	}
+	return 0, nil
+}
+
+func firstEventAtOffset(f *os.File, offset int64) (Event, bool, error) {
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return Event{}, false, err
+	}
+	r := bufio.NewReaderSize(f, 1024*1024)
+	line, err := r.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return Event{}, false, err
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return Event{}, false, nil
+	}
+	var ev Event
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return Event{}, false, err
+	}
+	return ev, true, nil
+}
+
 func (s *Store) applyEvent(ev Event) error {
 	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
 	tx, err := s.DB.Begin()
@@ -722,7 +869,17 @@ func (s *Store) applyEvent(ev Event) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`insert or ignore into events_applied(event_id,event_type,recorded_at_ms) values(?,?,?)`, ev.EventID, ev.EventType, ev.RecordedAtMS); err != nil {
+	var applied int
+	if err := tx.QueryRow(`select count(*) from events_applied where event_id = ?`, ev.EventID).Scan(&applied); err != nil {
+		return err
+	}
+	if applied > 0 {
+		if err := advanceProjectionCursor(tx, ev); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(`insert into events_applied(event_id,event_type,recorded_at_ms) values(?,?,?)`, ev.EventID, ev.EventType, ev.RecordedAtMS); err != nil {
 		return err
 	}
 	switch ev.EventType {
@@ -787,7 +944,15 @@ func (s *Store) applyEvent(ev Event) error {
 	if err != nil {
 		return err
 	}
+	if err := advanceProjectionCursor(tx, ev); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+func advanceProjectionCursor(tx *sql.Tx, ev Event) error {
+	_, err := tx.Exec(`insert or replace into projection_state(projection_name,event_id,recorded_at_ms) values(?,?,?)`, "main", ev.EventID, ev.RecordedAtMS)
+	return err
 }
 
 func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRootID, sourceKind, path, rel, invID, entryID string, report *ScanReport) error {
