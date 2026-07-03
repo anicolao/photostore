@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 const metadataExtractorName = "photostore-exif"
@@ -38,6 +39,11 @@ type metadataObservation struct {
 	Warnings []string
 }
 
+type metadataCandidateResult struct {
+	Result string
+	Err    error
+}
+
 func (s *Store) RefreshMissingMetadata(progress ProgressFunc) (MetadataRefreshSummary, error) {
 	requestID := newID("meta_req")
 	requestEventID, err := s.appendEventReturnID("PhotoMetadataRefreshRequested", nil, nil, map[string]any{
@@ -56,14 +62,39 @@ func (s *Store) RefreshMissingMetadata(progress ProgressFunc) (MetadataRefreshSu
 		return MetadataRefreshSummary{}, err
 	}
 	summary := MetadataRefreshSummary{RequestID: requestID}
-	for _, candidate := range candidates {
-		summary.Attempted++
-		progressf(progress, "extracting metadata for %s", candidate.StoredObjectID)
-		result, err := s.recordMetadataForCandidate(candidate, &requestEventID)
-		if err != nil {
-			return summary, err
+	jobs := make(chan metadataCandidate)
+	results := make(chan metadataCandidateResult, len(candidates))
+	var wg sync.WaitGroup
+	workers := metadataWorkers()
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				progressf(progress, "extracting metadata for %s", candidate.StoredObjectID)
+				result, err := s.recordMetadataForCandidate(candidate, &requestEventID)
+				results <- metadataCandidateResult{Result: result, Err: err}
+			}
+		}()
+	}
+	go func() {
+		for _, candidate := range candidates {
+			jobs <- candidate
 		}
-		switch result {
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+	var firstErr error
+	for candidateResult := range results {
+		summary.Attempted++
+		if candidateResult.Err != nil {
+			if firstErr == nil {
+				firstErr = candidateResult.Err
+			}
+			continue
+		}
+		switch candidateResult.Result {
 		case "extracted":
 			summary.Extracted++
 		case "failed":
@@ -74,8 +105,15 @@ func (s *Store) RefreshMissingMetadata(progress ProgressFunc) (MetadataRefreshSu
 			summary.Skipped++
 		}
 	}
+	if firstErr != nil {
+		return summary, firstErr
+	}
 	progressf(progress, "metadata refresh attempted: %d, extracted: %d, failed: %d, skipped: %d, issues: %d", summary.Attempted, summary.Extracted, summary.Failed, summary.Skipped, summary.Issues)
 	return summary, nil
+}
+
+func metadataWorkers() int {
+	return workersFromEnv("PHOTOSTORE_METADATA_WORKERS")
 }
 
 func (s *Store) metadataMissingCandidates() ([]metadataCandidate, error) {

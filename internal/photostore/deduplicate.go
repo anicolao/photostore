@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 type DeduplicateSummary struct {
@@ -51,6 +52,13 @@ func (e dedupRelinkError) Error() string {
 	return e.err.Error()
 }
 
+type dedupCandidateResult struct {
+	Candidate duplicateCandidate
+	Result    fileVerification
+	Method    string
+	Err       error
+}
+
 func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary, error) {
 	requestID := newID("dedup_req")
 	requestEventID, err := s.appendEventReturnID("DuplicateDeduplicationRequested", nil, nil, map[string]any{
@@ -76,17 +84,45 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 		return DeduplicateSummary{}, err
 	}
 	summary := DeduplicateSummary{RequestID: requestID, Candidates: len(candidates)}
-	for _, candidate := range candidates {
-		progressf(progress, "verifying duplicate %s", candidate.StoredObjectID)
-		result, method, err := s.verifyAndDeduplicateCandidate(candidate)
-		if err != nil {
+	jobs := make(chan duplicateCandidate)
+	results := make(chan dedupCandidateResult, len(candidates))
+	var wg sync.WaitGroup
+	workers := dedupWorkers()
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				progressf(progress, "verifying duplicate %s", candidate.StoredObjectID)
+				result, method, err := s.verifyAndDeduplicateCandidate(candidate)
+				results <- dedupCandidateResult{
+					Candidate: candidate,
+					Result:    result,
+					Method:    method,
+					Err:       err,
+				}
+			}
+		}()
+	}
+	go func() {
+		for _, candidate := range candidates {
+			jobs <- candidate
+		}
+		close(jobs)
+		wg.Wait()
+		close(results)
+	}()
+	var appendErr error
+	for candidateResult := range results {
+		candidate := candidateResult.Candidate
+		if candidateResult.Err != nil {
 			var relinkErr dedupRelinkError
-			if errors.As(err, &relinkErr) {
+			if errors.As(candidateResult.Err, &relinkErr) {
 				summary.RelinkErrors++
-				progressf(progress, "duplicate relink failed for %s: %v", candidate.StoredObjectID, err)
+				progressf(progress, "duplicate relink failed for %s: %v", candidate.StoredObjectID, candidateResult.Err)
 			} else {
 				summary.VerificationErrors++
-				progressf(progress, "duplicate verification failed for %s: %v", candidate.StoredObjectID, err)
+				progressf(progress, "duplicate verification failed for %s: %v", candidate.StoredObjectID, candidateResult.Err)
 			}
 			continue
 		}
@@ -99,26 +135,36 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 			"strategy":             dedupStrategyPayload(),
 			"verification": map[string]any{
 				"hash_algorithm":  "sha256",
-				"canonical_hash":  result.CanonicalHash,
-				"duplicate_hash":  result.DuplicateHash,
-				"byte_comparison": result.BytesEqual,
-				"bytes_compared":  result.Size,
+				"canonical_hash":  candidateResult.Result.CanonicalHash,
+				"duplicate_hash":  candidateResult.Result.DuplicateHash,
+				"byte_comparison": candidateResult.Result.BytesEqual,
+				"bytes_compared":  candidateResult.Result.Size,
 			},
 			"storage": map[string]any{
 				"duplicate_deleted": true,
 				"replacement": map[string]any{
-					"method": method,
+					"method": candidateResult.Method,
 				},
 			},
 		}); err != nil {
-			return summary, err
+			if appendErr == nil {
+				appendErr = err
+			}
+			continue
 		}
 		summary.Deduplicated++
-		summary.BytesReleased += result.Size
-		progressf(progress, "deduplicated %s (%d bytes via %s)", candidate.StoredObjectID, result.Size, method)
+		summary.BytesReleased += candidateResult.Result.Size
+		progressf(progress, "deduplicated %s (%d bytes via %s)", candidate.StoredObjectID, candidateResult.Result.Size, candidateResult.Method)
+	}
+	if appendErr != nil {
+		return summary, appendErr
 	}
 	progressf(progress, "deduplicated: %d/%d, bytes released: %d, verification errors: %d, relink errors: %d", summary.Deduplicated, summary.Candidates, summary.BytesReleased, summary.VerificationErrors, summary.RelinkErrors)
 	return summary, nil
+}
+
+func dedupWorkers() int {
+	return workersFromEnv("PHOTOSTORE_DEDUP_WORKERS")
 }
 
 func (s *Store) duplicateCandidates() ([]duplicateCandidate, error) {
