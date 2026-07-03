@@ -25,8 +25,8 @@ func reducePhotoCaptureTime(tx *sql.Tx, ev Event, extractor map[string]any) erro
 	if !ok {
 		return nil
 	}
-	var sourceKind, relativePath, path, sourceEventID string
-	err := tx.QueryRow(`select source_kind, relative_path, path, source_event_id from source_occurrences where source_occurrence_id = ?`, str(ev.Payload["source_occurrence_id"])).Scan(&sourceKind, &relativePath, &path, &sourceEventID)
+	var relativePath, path string
+	err := tx.QueryRow(`select relative_path, path from source_occurrences where source_occurrence_id = ?`, str(ev.Payload["source_occurrence_id"])).Scan(&relativePath, &path)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
@@ -50,8 +50,8 @@ func reducePhotoCaptureTime(tx *sql.Tx, ev Event, extractor map[string]any) erro
 		capture.LocalTime,
 		capture.UTCOffset,
 		capture.Precision,
-		sourceKind,
-		sourceEventID,
+		"exif_datetime_original",
+		ev.EventID,
 		str(extractor["name"]),
 		int64Value(extractor["version"]),
 		photoCaptureTimeReducerName,
@@ -145,12 +145,6 @@ func metadataFieldMap(v any) map[string]any {
 
 func captureTimeFromFields(fields map[string]any) (captureTimeProjection, bool) {
 	raw := metadataFieldRaw(fields, "datetime_original")
-	if raw == "" {
-		raw = metadataFieldRaw(fields, "create_date")
-	}
-	if raw == "" {
-		raw = metadataFieldRaw(fields, "modify_date")
-	}
 	if raw == "" {
 		return captureTimeProjection{}, false
 	}
