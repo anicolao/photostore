@@ -56,7 +56,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   await tester.step('scan-completed-compact-progress', {
     description: 'The per-source scan completes with compact progress visible.',
     verifications: [
-      { spec: 'Scan job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('completed', { timeout: 10_000 }) },
+      { spec: 'Scan job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('completed') },
       { spec: 'Latest progress message is visible', check: async () => await expect(page.getByTestId('job-latest-progress')).toBeVisible() },
       {
         spec: 'Latest progress message is capped at 60 visible characters',
@@ -86,7 +86,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   await tester.step('duplicates-deduplicated', {
     description: 'The dashboard verifies retained duplicates and releases duplicate bytes.',
     verifications: [
-      { spec: 'Deduplication job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('duplicate_deduplication: completed', { timeout: 10_000 }) },
+      { spec: 'Deduplication job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('duplicate_deduplication: completed') },
       { spec: 'Deduplication progress reports released bytes', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /bytes released/) },
       { spec: 'Retained duplicate bytes drop to zero', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('0') },
       { spec: 'Deduplicate button disables when no duplicate bytes remain', check: async () => await expect(page.getByTestId('deduplicate-duplicates')).toBeDisabled() }
@@ -221,7 +221,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   await tester.step('metadata-refresh-triggered', {
     description: 'The dashboard can trigger a metadata refresh for photos without recorded metadata results.',
     verifications: [
-      { spec: 'Metadata refresh job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('metadata_refresh_missing: completed', { timeout: 10_000 }) },
+      { spec: 'Metadata refresh job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('metadata_refresh_missing: completed') },
       { spec: 'Metadata refresh reports no missing work after scan-time extraction', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /metadata refresh attempted: 0/) }
     ]
   });

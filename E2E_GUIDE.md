@@ -17,6 +17,11 @@ generated from test steps.
 - Screenshots should use zero pixel tolerance.
 - Tests should not use arbitrary sleeps. Wait for real UI state, API completion,
   or explicit job status.
+- E2E waits and assertion timeouts must never exceed 2000 ms. Do not use
+  `waitForTimeout` under any circumstances. If a state transition cannot be
+  observed inside a 2000 ms assertion window, fix the app/test signal rather
+  than increasing the timeout. The overall Playwright test timeout may remain
+  longer because it bounds the whole scenario, not an individual wait.
 
 ## Tooling
 
@@ -82,7 +87,7 @@ export default defineConfig({
   reporter: 'html',
   timeout: 60_000,
   expect: {
-    timeout: 5_000,
+    timeout: 2_000,
     toHaveScreenshot: {
       maxDiffPixels: 0
     }
@@ -299,7 +304,9 @@ The expected CI checks are:
 ```sh
 nix develop --command go test ./...
 nix develop --command sh -c 'cd web && bun install --frozen-lockfile'
+nix develop --command sh -c 'cd web && bun run check:precommit'
 nix develop --command sh -c 'cd web && bun run check'
+nix develop --command sh -c 'cd web && bun run check:e2e-rules'
 nix develop --command sh -c 'cd web && bun run build'
 nix develop --command sh -c 'cd web && bun run test:e2e:install'
 nix develop --command sh -c 'cd web && bun run test:e2e'
@@ -308,3 +315,7 @@ nix develop --command sh -c 'cd web && bun run test:e2e'
 The GitHub Actions workflow in `.github/workflows/ci.yml` runs these commands on
 macOS for pull requests. It runs `bun run test:e2e` without snapshot update mode,
 so committed screenshots must already match pixel for pixel.
+
+The `bun run check:precommit` script is the local precommit check for web
+changes. It includes `bun run check:e2e-rules`, which fails if E2E code uses
+`waitForTimeout` or an explicit wait/assertion timeout above 2000 ms.

@@ -7,6 +7,8 @@
     "dev": "vite dev --host 127.0.0.1 --port 5174 --strictPort",
     "build": "vite build",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check:e2e-rules": "bun scripts/check-e2e-rules.ts",
+    "check:precommit": "bun run check:e2e-rules && bun run check",
     "test-server": "bun scripts/test-server.ts",
     "test:e2e:install": "playwright install chromium",
     "test:e2e": "playwright test",
