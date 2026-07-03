@@ -129,8 +129,9 @@ POST /api/inventories/acquire
 POST /api/inventories/{historical_inventory_id}/scan
 
 GET  /api/events?limit=100
+GET  /api/events/stream
+GET  /api/jobs
 GET  /api/jobs/{job_id}
-GET  /api/jobs/{job_id}/events
 ```
 
 Command endpoints should return `202 Accepted` with a `job_id` when work runs
@@ -148,10 +149,10 @@ asynchronously. The job projection should expose:
 }
 ```
 
-`/api/jobs/{job_id}/events` can be Server-Sent Events. Polling
-`/api/jobs/{job_id}` is acceptable for the first implementation if it keeps the
-UI deterministic and simple. The MVP UI also polls projection endpoints
-periodically so changes made by CLI commands appear without a manual refresh.
+`/api/events/stream` is a Server-Sent Events stream. It sends an initial
+`job_snapshot` event followed by job progress and projection-change events.
+The MVP UI also polls projection endpoints periodically so changes made by CLI
+commands appear without a manual refresh.
 
 ## UI Surface
 
@@ -200,7 +201,7 @@ The runner should:
 - Limit concurrent ingestion jobs to one for the MVP.
 - Keep command output in structured progress records rather than terminal text.
 - Persist final scan reports in the same report format used by the CLI.
-- Expose current progress through `/api/jobs/{job_id}`.
+- Expose current progress through `/api/jobs/{job_id}` and `/api/events/stream`.
 - Recover gracefully if the server exits during a job by leaving durable events
   and reports as the source of truth.
 

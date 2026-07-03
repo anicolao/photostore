@@ -1,16 +1,11 @@
 package photostore
 
 import (
-	"bufio"
-	"crypto/sha1"
 	"database/sql"
 	"embed"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"mime"
 	"net"
@@ -168,7 +163,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/metadata/refresh-missing", s.handleRefreshMissingMetadata)
 	s.mux.HandleFunc("POST /api/duplicates/deduplicate", s.handleDeduplicateDuplicates)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
-	s.mux.HandleFunc("GET /api/events/ws", s.handleEventWebSocket)
+	s.mux.HandleFunc("GET /api/events/stream", s.handleEventStream)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	s.mux.HandleFunc("GET /api/jobs/{job_id}", s.handleJob)
 	s.mux.HandleFunc("/", s.handleStatic)
@@ -622,46 +617,50 @@ func parseProgressMessage(message string) (string, *int, *int) {
 	return displayMessage, &current, &total
 }
 
-func (s *Server) handleEventWebSocket(w http.ResponseWriter, r *http.Request) {
-	if !s.websocketOriginAllowed(r) {
-		writeErrorStatus(w, http.StatusForbidden, errors.New("websocket origin is not allowed"))
+func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
+	if !s.eventStreamOriginAllowed(r) {
+		writeErrorStatus(w, http.StatusForbidden, errors.New("event stream origin is not allowed"))
 		return
 	}
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		writeErrorStatus(w, http.StatusBadRequest, errors.New("websocket upgrade is required"))
-		return
-	}
-	key := r.Header.Get("Sec-WebSocket-Key")
-	if key == "" {
-		writeErrorStatus(w, http.StatusBadRequest, errors.New("Sec-WebSocket-Key is required"))
-		return
-	}
-	hijacker, ok := w.(http.Hijacker)
+	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeErrorStatus(w, http.StatusInternalServerError, errors.New("websocket hijacking is unavailable"))
+		writeErrorStatus(w, http.StatusInternalServerError, errors.New("event streaming is unavailable"))
 		return
 	}
-	conn, rw, err := hijacker.Hijack()
-	if err != nil {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Connection", "keep-alive")
+	if err := writeSSEEvent(w, ServerEvent{Type: "job_snapshot", RecordedAtMS: nowMS(), Jobs: s.allJobs()}); err != nil {
 		return
 	}
-	defer conn.Close()
-	if err := writeWebSocketUpgrade(rw, key); err != nil {
-		return
-	}
+	flusher.Flush()
 	ch := s.subscribe()
 	defer s.unsubscribe(ch)
-	if err := writeWebSocketJSON(conn, ServerEvent{Type: "job_snapshot", RecordedAtMS: nowMS(), Jobs: s.allJobs()}); err != nil {
-		return
-	}
-	for event := range ch {
-		if err := writeWebSocketJSON(conn, event); err != nil {
+	for {
+		select {
+		case <-r.Context().Done():
 			return
+		case event := <-ch:
+			if err := writeSSEEvent(w, event); err != nil {
+				return
+			}
+			flusher.Flush()
 		}
 	}
 }
 
-func (s *Server) websocketOriginAllowed(r *http.Request) bool {
+func writeSSEEvent(w http.ResponseWriter, event ServerEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) eventStreamOriginAllowed(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
 		return true
@@ -676,6 +675,35 @@ func (s *Server) websocketOriginAllowed(r *http.Request) bool {
 	originHost, _ := splitHostPort(parsed.Host)
 	requestHost, _ := splitHostPort(r.Host)
 	return strings.EqualFold(originHost, requestHost) && s.hostAllowed(r.Host)
+}
+
+func (s *Server) subscribe() chan ServerEvent {
+	ch := make(chan ServerEvent, 128)
+	s.subsMu.Lock()
+	s.subs[ch] = struct{}{}
+	s.subsMu.Unlock()
+	return ch
+}
+
+func (s *Server) unsubscribe(ch chan ServerEvent) {
+	s.subsMu.Lock()
+	delete(s.subs, ch)
+	s.subsMu.Unlock()
+	close(ch)
+}
+
+func (s *Server) broadcast(event ServerEvent) {
+	if event.RecordedAtMS == 0 {
+		event.RecordedAtMS = nowMS()
+	}
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for ch := range s.subs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
 }
 
 func splitHostPort(host string) (string, string) {
@@ -777,76 +805,6 @@ func (s *Server) persistedScanProgress(scan ScanProjection) []string {
 
 func scanJobID(scanID string) string {
 	return "scan_job_" + scanID
-}
-
-func (s *Server) subscribe() chan ServerEvent {
-	ch := make(chan ServerEvent, 128)
-	s.subsMu.Lock()
-	s.subs[ch] = struct{}{}
-	s.subsMu.Unlock()
-	return ch
-}
-
-func (s *Server) unsubscribe(ch chan ServerEvent) {
-	s.subsMu.Lock()
-	delete(s.subs, ch)
-	s.subsMu.Unlock()
-	close(ch)
-}
-
-func (s *Server) broadcast(event ServerEvent) {
-	if event.RecordedAtMS == 0 {
-		event.RecordedAtMS = nowMS()
-	}
-	s.subsMu.Lock()
-	defer s.subsMu.Unlock()
-	for ch := range s.subs {
-		select {
-		case ch <- event:
-		default:
-		}
-	}
-}
-
-func writeWebSocketUpgrade(rw *bufio.ReadWriter, key string) error {
-	_, err := fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", webSocketAccept(key))
-	if err != nil {
-		return err
-	}
-	return rw.Flush()
-}
-
-func webSocketAccept(key string) string {
-	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	return base64.StdEncoding.EncodeToString(sum[:])
-}
-
-func writeWebSocketJSON(conn net.Conn, event ServerEvent) error {
-	payload, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	return writeWebSocketText(conn, payload)
-}
-
-func writeWebSocketText(w io.Writer, payload []byte) error {
-	header := []byte{0x81}
-	switch n := len(payload); {
-	case n <= 125:
-		header = append(header, byte(n))
-	case n <= 65535:
-		header = append(header, 126, byte(n>>8), byte(n))
-	default:
-		header = append(header, 127)
-		var size [8]byte
-		binary.BigEndian.PutUint64(size[:], uint64(n))
-		header = append(header, size[:]...)
-	}
-	if _, err := w.Write(header); err != nil {
-		return err
-	}
-	_, err := w.Write(payload)
-	return err
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {

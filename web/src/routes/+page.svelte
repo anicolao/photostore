@@ -17,7 +17,7 @@
   let jobLogOpen = false;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  let eventsSocket: WebSocket | undefined;
+  let eventSource: EventSource | undefined;
   let eventsClosed = false;
   $: runningJobActive = activeJob?.status === 'running';
 
@@ -59,22 +59,19 @@
     if (typeof window === 'undefined') {
       return;
     }
-    if (eventsSocket && (eventsSocket.readyState === WebSocket.CONNECTING || eventsSocket.readyState === WebSocket.OPEN)) {
+    if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
       return;
     }
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    eventsSocket = new WebSocket(`${protocol}//${window.location.host}/api/events/ws`);
-    eventsSocket.onmessage = (message) => {
+    eventSource = new EventSource('/api/events/stream');
+    eventSource.onmessage = (message) => {
       applyServerEvent(JSON.parse(message.data) as ServerEvent);
     };
-    eventsSocket.onclose = () => {
-      eventsSocket = undefined;
+    eventSource.onerror = () => {
+      eventSource?.close();
+      eventSource = undefined;
       if (!eventsClosed) {
         reconnectTimer = setTimeout(connectEvents, 1000);
       }
-    };
-    eventsSocket.onerror = () => {
-      eventsSocket?.close();
     };
   }
 
@@ -319,7 +316,7 @@
       clearTimeout(reconnectTimer);
     }
     eventsClosed = true;
-    eventsSocket?.close();
+    eventSource?.close();
   });
 </script>
 
