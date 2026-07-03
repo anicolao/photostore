@@ -11,7 +11,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1019,14 +1018,17 @@ func (s *Store) materialize(objID, acquiredKey, ref string) error {
 	if _, err := os.Stat(dst); err == nil {
 		return nil
 	}
-	if err := cloneOrCopy(src, dst); err != nil {
+	if err := os.Link(src, dst); err != nil {
+		return err
+	}
+	if err := chmodCompleteFile(dst); err != nil {
 		return err
 	}
 	return s.appendEvent("ContentAddressMaterialized", nil, nil, map[string]any{
 		"stored_object_id": objID,
 		"content_ref":      ref,
 		"materialization": map[string]any{
-			"method":  "apfs_clone_or_copy",
+			"method":  "hard_link",
 			"created": true,
 		},
 	})
@@ -1334,34 +1336,8 @@ func copyHash(src, dst string) (copyResult, error) {
 	return copyResult{Hash: hex.EncodeToString(h.Sum(nil)), Size: n}, nil
 }
 
-func cloneOrCopy(src, dst string) error {
-	if err := exec.Command("cp", "-c", src, dst).Run(); err == nil {
-		return chmodCompleteFile(dst)
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(out, in)
-	closeErr := out.Close()
-	if copyErr != nil {
-		_ = os.Remove(dst)
-		return copyErr
-	}
-	if closeErr != nil {
-		_ = os.Remove(dst)
-		return closeErr
-	}
-	return chmodCompleteFile(dst)
-}
-
 func chmodCompleteFile(path string) error {
-	return os.Chmod(path, 0o600)
+	return os.Chmod(path, 0o400)
 }
 
 var annexSize = regexp.MustCompile(`SHA256E-s([0-9]+)--[0-9a-fA-F]{64}`)

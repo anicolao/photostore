@@ -253,6 +253,31 @@ func TestScanSourcesReportsDuplicateGarbage(t *testing.T) {
 	}
 }
 
+func TestNewContentMaterializesCASAsHardLink(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	content := []byte("new-content")
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), content)
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSources(nil); err != nil {
+		t.Fatal(err)
+	}
+	acquiredPath, canonicalPath := acquiredAndCanonicalPaths(t, st)
+	assertSameFile(t, acquiredPath, canonicalPath)
+	assertFileMode(t, acquiredPath, 0o400)
+	assertFileMode(t, canonicalPath, 0o400)
+}
+
 func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
@@ -282,8 +307,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	}
 	duplicatePath := retainedDuplicatePath(t, st)
 	canonicalPath := retainedDuplicateCanonicalPath(t, st)
-	assertFileMode(t, duplicatePath, 0o600)
-	assertFileMode(t, canonicalPath, 0o600)
+	assertFileMode(t, duplicatePath, 0o400)
+	assertFileMode(t, canonicalPath, 0o400)
 	summary, err := st.VerifyAndDeduplicate(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -306,8 +331,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 		t.Fatalf("deduplicated object bytes = %q, want %q", got, content)
 	}
 	assertSameFile(t, duplicatePath, canonicalPath)
-	assertFileMode(t, duplicatePath, 0o600)
-	assertFileMode(t, canonicalPath, 0o600)
+	assertFileMode(t, duplicatePath, 0o400)
+	assertFileMode(t, canonicalPath, 0o400)
 	allAcquiredPaths := retainedAcquiredPaths(t, st)
 	for _, path := range allAcquiredPaths {
 		assertSameFile(t, path, canonicalPath)
@@ -364,7 +389,7 @@ func TestStaleDeduplicationStrategyRequiresReassessment(t *testing.T) {
 		"storage": map[string]any{
 			"duplicate_deleted": true,
 			"replacement": map[string]any{
-				"method": "apfs_clone",
+				"method": "old_strategy",
 			},
 		},
 	}); err != nil {
@@ -437,6 +462,19 @@ func retainedDuplicateCandidate(t *testing.T, st *Store) duplicateCandidate {
 		t.Fatal(err)
 	}
 	return candidate
+}
+
+func acquiredAndCanonicalPaths(t *testing.T, st *Store) (string, string) {
+	t.Helper()
+	var key, ref string
+	if err := st.DB.QueryRow(`
+		select st.acquired_storage_key, scl.content_ref
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		limit 1`).Scan(&key, &ref); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(st.Root, filepath.FromSlash(key)), filepath.Join(st.Root, filepath.FromSlash(casKey(ref)))
 }
 
 func retainedDuplicatePathByKey(t *testing.T, st *Store, key string) string {
