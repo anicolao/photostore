@@ -122,9 +122,10 @@ Only entries whose trusted hash is not already seen are resolved to files and ac
 ## Duplicate Garbage Reporting
 
 Acquisition records duplicate observations. New content is materialized into CAS
-as a hard link from the acquired object. A later verifier/deduplicator
-recomputes hashes, performs a byte-for-byte comparison, and relinks acquired
-objects to the canonical CAS inode for the current deduplication strategy.
+as a hard link from the acquired object, so it does not create duplicate bytes.
+When CAS already exists at ingest, the acquired object is retained until a later
+verifier/deduplicator recomputes hashes, performs a byte-for-byte comparison,
+and relinks it to the canonical CAS inode.
 
 Scan reports include:
 

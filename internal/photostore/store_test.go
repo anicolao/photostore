@@ -321,6 +321,13 @@ func TestNewContentMaterializesCASAsHardLink(t *testing.T) {
 	assertSameFile(t, acquiredPath, canonicalPath)
 	assertFileMode(t, acquiredPath, 0o400)
 	assertFileMode(t, canonicalPath, 0o400)
+	summary, err := st.Summary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RetainedDuplicateBytes != 0 {
+		t.Fatalf("retained duplicate bytes for new hard-linked content = %d, want 0", summary.RetainedDuplicateBytes)
+	}
 }
 
 func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
@@ -347,8 +354,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.RetainedDuplicateBytes != int64(2*len(content)) {
-		t.Fatalf("retained duplicate bytes before dedup = %d, want %d", before.RetainedDuplicateBytes, 2*len(content))
+	if before.RetainedDuplicateBytes != int64(len(content)) {
+		t.Fatalf("retained duplicate bytes before dedup = %d, want %d", before.RetainedDuplicateBytes, len(content))
 	}
 	duplicatePath := retainedDuplicatePath(t, st)
 	canonicalPath := retainedDuplicateCanonicalPath(t, st)
@@ -452,8 +459,8 @@ func TestStaleDeduplicationStrategyRequiresReassessment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stale.RetainedDuplicateBytes != int64(2*len(content)) {
-		t.Fatalf("stale retained duplicate bytes = %d, want %d", stale.RetainedDuplicateBytes, 2*len(content))
+	if stale.RetainedDuplicateBytes != int64(len(content)) {
+		t.Fatalf("stale retained duplicate bytes = %d, want %d", stale.RetainedDuplicateBytes, len(content))
 	}
 	summary, err := st.VerifyAndDeduplicate(nil)
 	if err != nil {

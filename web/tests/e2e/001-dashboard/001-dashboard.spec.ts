@@ -14,7 +14,7 @@ const fixtureJPEGWithEXIF = jpegWithEXIF(fixtureJPEG, [
 ]);
 const fixturePosterJPEG = jpegWithoutEXIFDimensions(2400, 1600);
 const fixtureBadJPEG = Buffer.from('not really a jpeg');
-const expectedRetainedAcquiredBytes = (fixtureJPEGWithEXIF.length * 2) + fixturePosterJPEG.length + fixtureJPEG.length + fixtureBadJPEG.length;
+const expectedDuplicateBytes = fixtureJPEGWithEXIF.length;
 
 test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   const tester = new TestStepHelper(page, testInfo);
@@ -62,7 +62,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Source last scan is no longer Never', check: async () => await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never') },
       { spec: 'Source scan button is re-enabled', check: async () => await expect(page.getByTestId('source-list').getByRole('button', { name: 'Scan' })).toBeEnabled() },
       { spec: 'Scan table shows completed scan', check: async () => await expect(page.getByTestId('scan-table')).toContainText('completed') },
-      { spec: 'Retained acquired bytes summary is updated', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText(new Intl.NumberFormat('en-CA').format(expectedRetainedAcquiredBytes)) }
+      { spec: 'Duplicate bytes summary is updated', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText(new Intl.NumberFormat('en-CA').format(expectedDuplicateBytes)) }
     ]
   });
 

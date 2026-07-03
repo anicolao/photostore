@@ -35,7 +35,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 - [x] Source last scan is no longer Never
 - [x] Source scan button is re-enabled
 - [x] Scan table shows completed scan
-- [x] Retained acquired bytes summary is updated
+- [x] Duplicate bytes summary is updated
 
 ---
 
