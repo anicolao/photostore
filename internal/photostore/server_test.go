@@ -780,6 +780,34 @@ func TestServeStaticFallback(t *testing.T) {
 	}
 }
 
+func TestServeBuildFileRequiresExplicitBuildDir(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	buildDir := filepath.Join(t.TempDir(), "build")
+	mustMkdir(t, buildDir)
+	mustWrite(t, filepath.Join(buildDir, "index.html"), []byte("Custom Build"))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	NewServer(st, ServerOptions{}).ServeHTTP(rr, req)
+	if bytes.Contains(rr.Body.Bytes(), []byte("Custom Build")) {
+		t.Fatal("served build directory without explicit BuildDir")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rr = httptest.NewRecorder()
+	NewServer(st, ServerOptions{BuildDir: buildDir}).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("Custom Build")) {
+		t.Fatalf("explicit build dir response = %q, want custom build", rr.Body.String())
+	}
+}
+
 func postJSON(t *testing.T, url string, body any, wantStatus int) {
 	t.Helper()
 	postJSONInto(t, url, body, wantStatus, nil)

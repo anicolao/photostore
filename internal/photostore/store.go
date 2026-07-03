@@ -115,6 +115,14 @@ func Init(root string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	var initialized bool
+	if err := st.DB.QueryRow(`select count(*) > 0 from events_applied where event_type = 'StoreInitialized'`).Scan(&initialized); err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	if initialized {
+		return st, nil
+	}
 	if err := st.appendEvent("StoreInitialized", nil, nil, map[string]any{
 		"store_path":                abs,
 		"event_log_path":            filepath.Join(abs, "events", "events.jsonl"),
@@ -326,9 +334,11 @@ func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, 
 		return "", err
 	}
 	if err := s.scanSourceRootFiles(scanID, roots, processed, report, progress, ScanOptions{}); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
 	if err := s.writeReport(report); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
 	if err := s.appendEvent("IngestionScanCompleted", nil, &scanID, map[string]any{
@@ -399,9 +409,11 @@ func (s *Store) ScanSourceRootsWithOptions(sourceRootIDs []string, progress Prog
 	}
 	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
 	if err := s.scanSourceRootFiles(scanID, roots, nil, report, progress, opts); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
 	if err := s.writeReport(report); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
 	if err := s.appendEvent("IngestionScanCompleted", nil, &scanID, map[string]any{
@@ -428,6 +440,34 @@ func (s *Store) ScanSourceRootsWithOptions(sourceRootIDs []string, progress Prog
 		return "", err
 	}
 	return scanID, nil
+}
+
+func (s *Store) appendScanFailed(scanID string, report *ScanReport, scanErr error) error {
+	return s.appendEvent("IngestionScanFailed", nil, &scanID, map[string]any{
+		"scan_id":      scanID,
+		"failed_at_ms": nowMS(),
+		"status":       "failed",
+		"error":        errPayload(scanErr, true),
+		"stats":        scanStatsPayload(report),
+	})
+}
+
+func scanStatsPayload(report *ScanReport) map[string]any {
+	if report == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"source_roots_scanned":           report.SourceRootsScanned,
+		"directories_seen":               report.DirectoriesSeen,
+		"regular_files_seen":             report.RegularFilesSeen,
+		"candidate_files_seen":           report.CandidateFilesSeen,
+		"source_files_acquired":          report.SourceFilesAcquired,
+		"source_file_acquire_failures":   report.SourceFileAcquireFailures,
+		"content_addresses_materialized": report.ContentAddressesMaterialized,
+		"duplicate_acquisitions":         report.DuplicateAcquisitions,
+		"duplicate_garbage_bytes":        report.DuplicateGarbageBytes,
+		"non_candidate_files_skipped":    report.NonCandidateFilesSkipped,
+	}
 }
 
 type sourceFileCandidate struct {
@@ -806,9 +846,10 @@ func (s *Store) appendEventReturnID(eventType string, causationID *string, corre
 		SchemaVersion: schemaVersion,
 		RecordedAtMS:  nowMS(),
 		Actor: map[string]any{
-			"type": "process",
-			"id":   "photostore-cli",
-			"pid":  os.Getpid(),
+			"type":     "process",
+			"id":       "photostore-cli",
+			"pid":      os.Getpid(),
+			"hostname": hostname(),
 		},
 		CausationID:   causationID,
 		CorrelationID: correlationID,
@@ -827,6 +868,14 @@ func (s *Store) appendEventReturnID(eventType string, causationID *string, corre
 		return "", err
 	}
 	return ev.EventID, nil
+}
+
+func hostname() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 func (s *Store) withEventLogLock(fn func() error) error {
@@ -1011,7 +1060,9 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 	case "IngestionScanStarted":
 		_, err = tx.Exec(`insert or replace into scans(scan_id,status,started_at_ms,stats_json) values(?,?,?,coalesce((select stats_json from scans where scan_id=?),'{}'))`, str(ev.Payload["scan_id"]), "started", int64Value(ev.Payload["started_at_ms"]), str(ev.Payload["scan_id"]))
 	case "IngestionScanCompleted":
-		_, err = tx.Exec(`insert or replace into scans(scan_id,status,completed_at_ms,stats_json) values(?,?,?,?)`, str(ev.Payload["scan_id"]), "completed", int64Value(ev.Payload["completed_at_ms"]), mustJSON(ev.Payload["stats"]))
+		_, err = tx.Exec(`insert or replace into scans(scan_id,status,started_at_ms,completed_at_ms,stats_json) values(?,?,coalesce((select started_at_ms from scans where scan_id=?),0),?,?)`, str(ev.Payload["scan_id"]), "completed", str(ev.Payload["scan_id"]), int64Value(ev.Payload["completed_at_ms"]), mustJSON(ev.Payload["stats"]))
+	case "IngestionScanFailed":
+		_, err = tx.Exec(`insert or replace into scans(scan_id,status,started_at_ms,completed_at_ms,stats_json) values(?,?,coalesce((select started_at_ms from scans where scan_id=?),0),?,?)`, str(ev.Payload["scan_id"]), "failed", str(ev.Payload["scan_id"]), int64Value(ev.Payload["failed_at_ms"]), mustJSON(ev.Payload["stats"]))
 	case "PhotoMetadataExtracted":
 		extractor := mapValue(ev.Payload["extractor"])
 		_, err = tx.Exec(`insert or ignore into content_metadata values(?,?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["extracted_at_ms"]), pj("fields"), pj("warnings"))
