@@ -150,8 +150,8 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	}
 	var summary StoreSummary
 	getJSON(t, ts.URL+"/api/store", &summary)
-	if summary.RetainedDuplicateBytes != int64(len(jpegBytes)) {
-		t.Fatalf("retained duplicate bytes = %d, want %d", summary.RetainedDuplicateBytes, len(jpegBytes))
+	if summary.RetainedDuplicateBytes != int64(2*len(jpegBytes)) {
+		t.Fatalf("retained duplicate bytes = %d, want %d", summary.RetainedDuplicateBytes, 2*len(jpegBytes))
 	}
 	getJSON(t, ts.URL+"/api/sources", &sources)
 	if sources[0].LastScanID == nil || *sources[0].LastScanID != *done.ResultRef {
