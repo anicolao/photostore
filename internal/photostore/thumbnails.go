@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"io"
 	"os"
@@ -12,10 +13,12 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+
+	xdraw "golang.org/x/image/draw"
 )
 
 const thumbnailMaxDimension = 240
-const thumbnailRendererVersion = "orient-v2"
+const thumbnailRendererVersion = "orient-v3"
 
 const thumbnailPlaceholderSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="180" viewBox="0 0 240 180" role="img" aria-label="Thumbnail pending"><rect width="240" height="180" fill="#eef1f5"/><path d="M58 124l34-38 28 29 18-20 44 49H58z" fill="#c7d0db"/><circle cx="164" cy="58" r="18" fill="#d7dee7"/><text x="120" y="158" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#667085">thumbnail pending</text></svg>`
 
@@ -283,16 +286,8 @@ func writeJPEGThumbnail(srcPath, dstPath string) error {
 	orientedWidth, orientedHeight := orientedDimensions(width, height, orientation)
 	dstWidth, dstHeight := thumbnailSize(orientedWidth, orientedHeight)
 	thumb := image.NewRGBA(image.Rect(0, 0, dstWidth, dstHeight))
-	for y := 0; y < dstHeight; y++ {
-		oy := y * orientedHeight / dstHeight
-		for x := 0; x < dstWidth; x++ {
-			ox := x * orientedWidth / dstWidth
-			sx, sy := orientedToSource(ox, oy, width, height, orientation)
-			sx += bounds.Min.X
-			sy += bounds.Min.Y
-			thumb.Set(x, y, img.At(sx, sy))
-		}
-	}
+	oriented := orientedImage{src: img, orientation: orientation, width: width, height: height}
+	xdraw.CatmullRom.Scale(thumb, thumb.Bounds(), oriented, oriented.Bounds(), xdraw.Over, nil)
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
 		return err
 	}
@@ -310,6 +305,28 @@ func writeJPEGThumbnail(srcPath, dstPath string) error {
 		return err
 	}
 	return os.Rename(tmpPath, dstPath)
+}
+
+type orientedImage struct {
+	src         image.Image
+	orientation int
+	width       int
+	height      int
+}
+
+func (img orientedImage) ColorModel() color.Model {
+	return img.src.ColorModel()
+}
+
+func (img orientedImage) Bounds() image.Rectangle {
+	width, height := orientedDimensions(img.width, img.height, img.orientation)
+	return image.Rect(0, 0, width, height)
+}
+
+func (img orientedImage) At(x, y int) color.Color {
+	sx, sy := orientedToSource(x, y, img.width, img.height, img.orientation)
+	bounds := img.src.Bounds()
+	return img.src.At(sx+bounds.Min.X, sy+bounds.Min.Y)
 }
 
 func thumbnailSize(width, height int) (int, int) {
