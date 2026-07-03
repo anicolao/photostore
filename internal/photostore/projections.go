@@ -685,6 +685,7 @@ func (s *Store) dimensionsForStorageKey(storageKey string) (int, int) {
 type StoredObjectFile struct {
 	Path         string
 	OriginalPath string
+	ContentRef   string
 }
 
 func (s *Store) StoredObjectFile(storedObjectID string) (StoredObjectFile, error) {
@@ -706,5 +707,27 @@ func (s *Store) StoredObjectFile(storedObjectID string) (StoredObjectFile, error
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return StoredObjectFile{}, errors.New("stored object path escapes store root")
 	}
-	return StoredObjectFile{Path: path, OriginalPath: originalPath}, nil
+	contentRef, _ := s.contentRefForStoredObject(storedObjectID)
+	return StoredObjectFile{Path: path, OriginalPath: originalPath, ContentRef: contentRef}, nil
+}
+
+func (s *Store) CanonicalObjectFile(storedObjectID string) (StoredObjectFile, error) {
+	file, err := s.StoredObjectFile(storedObjectID)
+	if err != nil {
+		return StoredObjectFile{}, err
+	}
+	if file.ContentRef == "" {
+		return StoredObjectFile{}, sql.ErrNoRows
+	}
+	return StoredObjectFile{
+		Path:         filepath.Join(s.Root, filepath.FromSlash(casKey(file.ContentRef))),
+		OriginalPath: file.OriginalPath,
+		ContentRef:   file.ContentRef,
+	}, nil
+}
+
+func (s *Store) contentRefForStoredObject(storedObjectID string) (string, error) {
+	var contentRef string
+	err := s.DB.QueryRow(`select content_ref from source_content_links where stored_object_id = ? order by source_occurrence_id limit 1`, storedObjectID).Scan(&contentRef)
+	return contentRef, err
 }

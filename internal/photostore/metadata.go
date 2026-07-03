@@ -10,7 +10,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 )
 
@@ -127,20 +126,12 @@ func (s *Store) recordMetadataForSourceFile(scanID string, causationID *string, 
 }
 
 func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causationID *string) (string, error) {
-	path := filepath.Join(s.Root, filepath.FromSlash(candidate.StorageKey))
-	observation, extractErr := extractJPEGMetadata(path)
-	existing, hasSuccess, err := s.metadataFields(candidate.ContentRef)
+	_, hasSuccess, err := s.metadataFields(candidate.ContentRef)
 	if err != nil {
 		return "", err
 	}
 	if hasSuccess {
-		if extractErr != nil {
-			return s.appendMetadataMismatch(candidate, causationID, existing, map[string]map[string]string{}, extractErr.Error())
-		}
-		if reflect.DeepEqual(existing, observation.Fields) {
-			return "skipped", nil
-		}
-		return s.appendMetadataMismatch(candidate, causationID, existing, observation.Fields, "")
+		return "skipped", nil
 	}
 	hasFailure, err := s.metadataFailureExists(candidate.ContentRef)
 	if err != nil {
@@ -149,6 +140,8 @@ func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causatio
 	if hasFailure {
 		return "skipped", nil
 	}
+	path := filepath.Join(s.Root, filepath.FromSlash(candidate.StorageKey))
+	observation, extractErr := extractJPEGMetadata(path)
 	if extractErr != nil {
 		if err := s.appendEvent("PhotoMetadataExtractionFailed", causationID, &candidate.ScanID, map[string]any{
 			"stored_object_id":     candidate.StoredObjectID,
