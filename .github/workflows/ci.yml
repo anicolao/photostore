@@ -30,6 +30,9 @@ jobs:
       - name: Check web types
         run: nix develop --command sh -c 'cd web && bun run check'
 
+      - name: Check E2E rules
+        run: nix develop --command sh -c 'cd web && bun run check:e2e-rules'
+
       - name: Build web UI
         run: nix develop --command sh -c 'cd web && bun run build'
 

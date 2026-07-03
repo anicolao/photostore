@@ -7,7 +7,7 @@ export default defineConfig({
   reporter: 'html',
   timeout: 60_000,
   expect: {
-    timeout: 5_000,
+    timeout: 2_000,
     toHaveScreenshot: {
       maxDiffPixels: 0
     }
