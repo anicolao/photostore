@@ -367,13 +367,13 @@ Payload:
   "stored_object_id": "obj_...",
   "content_ref": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789:3456789",
   "materialization": {
-    "method": "apfs_clone",
+    "method": "hard_link",
     "created": true
   }
 }
 ```
 
-The CAS storage key is derived from `content_ref` and the configured CAS layout, so it is not recorded in the event. For the MVP, emit this event only when the CAS object did not already exist and was created by cloning the acquired temporary file. If the CAS path already exists, acquisition records a reference to the existing `content_ref`; a later verification pass can confirm that existing CAS object is present and intact.
+The CAS storage key is derived from `content_ref` and the configured CAS layout, so it is not recorded in the event. For the MVP, emit this event only when the CAS object did not already exist and was created by hard-linking the acquired object into the CAS path. If the CAS path already exists, acquisition records a reference to the existing `content_ref`; a later verification pass can confirm that existing CAS object is present and intact.
 
 ### HistoricalInventoryScanRequested
 

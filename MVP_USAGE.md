@@ -121,7 +121,10 @@ Only entries whose trusted hash is not already seen are resolved to files and ac
 
 ## Duplicate Garbage Reporting
 
-Acquisition retains duplicate bytes until a later verifier/deduplicator recomputes hashes and performs a byte-for-byte comparison.
+Acquisition records duplicate observations. New content is materialized into CAS
+as a hard link from the acquired object. A later verifier/deduplicator
+recomputes hashes, performs a byte-for-byte comparison, and relinks acquired
+objects to the canonical CAS inode for the current deduplication strategy.
 
 Scan reports include:
 
@@ -133,9 +136,8 @@ These numbers estimate the retained duplicate data created by the scan.
 ## Current Limits
 
 - The implementation is currently serial internally, though the CLI accepts `--workers` for compatibility with the MVP plan.
-- APFS clone is attempted with `cp -c`; ordinary copy is used as a fallback.
-- Verification and safe deduplication are follow-up processes and are not implemented yet.
-- Projections are maintained while events are appended; a full projection rebuild command is not implemented yet.
+- Newly seen CAS content is materialized with a hard link from the acquired object; filesystems without hard-link support are not supported.
+- Projection replay is maintained from the event log using a byte-offset cursor.
 - Archive traversal is not implemented.
 - Non-JPEG media is not implemented.
 
