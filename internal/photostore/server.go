@@ -63,6 +63,8 @@ type ServerEvent struct {
 	Jobs         []*Job `json:"jobs,omitempty"`
 }
 
+const completedJobRetentionLimit = 100
+
 func NewServer(store *Store, opts ServerOptions) http.Handler {
 	s := &Server{
 		store:       store,
@@ -554,11 +556,33 @@ func (s *Server) startJob(kind string, work func(ProgressFunc) (string, error)) 
 			job.Status = "completed"
 		}
 		copyJob := cloneJob(job)
+		s.pruneCompletedJobsLocked(completedJobRetentionLimit)
 		s.jobsMu.Unlock()
 		s.broadcast(ServerEvent{Type: "job_finished", Job: copyJob})
 		s.broadcast(ServerEvent{Type: "projection_changed"})
 	}()
 	return copyJob
+}
+
+func (s *Server) pruneCompletedJobsLocked(limit int) {
+	if limit < 0 {
+		limit = 0
+	}
+	completed := make([]*Job, 0, len(s.jobs))
+	for _, job := range s.jobs {
+		if job.Status != "running" {
+			completed = append(completed, job)
+		}
+	}
+	if len(completed) <= limit {
+		return
+	}
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].StartedAtMS > completed[j].StartedAtMS
+	})
+	for _, job := range completed[limit:] {
+		delete(s.jobs, job.JobID)
+	}
 }
 
 func (s *Server) jobList() []*Job {
