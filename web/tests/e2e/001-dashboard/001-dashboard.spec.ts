@@ -19,6 +19,7 @@ const expectedDuplicateBytes = fixtureJPEGWithEXIF.length;
 test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   const tester = new TestStepHelper(page, testInfo);
   tester.setMetadata('Dashboard Source Scan', 'Register a source root, scan it, inspect progress, drill into thumbnails, browse photos by date, and trigger metadata refresh.');
+  let jobPanelWidth = 0;
 
   await page.goto('/');
   await tester.step('empty-dashboard', {
@@ -65,6 +66,15 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
           expect(text.length).toBeLessThanOrEqual(60);
         }
       },
+      {
+        spec: 'Job panel has a stable reserved width',
+        check: async () => {
+          const box = await page.getByTestId('job-panel').boundingBox();
+          expect(box).not.toBeNull();
+          jobPanelWidth = Math.round(box!.width);
+          expect(jobPanelWidth).toBeGreaterThan(0);
+        }
+      },
       { spec: 'Full job log is hidden by default', check: async () => await expect(page.getByTestId('job-log')).toHaveCount(0) },
       { spec: 'Source last scan is no longer Never', check: async () => await expect(page.getByTestId('source-list')).not.toContainText('Last scan: Never') },
       { spec: 'Source scan button is re-enabled', check: async () => await expect(page.getByTestId('source-list').getByRole('button', { name: 'Scan' })).toBeEnabled() },
@@ -88,6 +98,14 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     verifications: [
       { spec: 'Deduplication job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('duplicate_deduplication: completed') },
       { spec: 'Deduplication progress reports released bytes', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /bytes released/) },
+      {
+        spec: 'Job panel width does not change for deduplication progress',
+        check: async () => {
+          const box = await page.getByTestId('job-panel').boundingBox();
+          expect(box).not.toBeNull();
+          expect(Math.round(box!.width)).toBe(jobPanelWidth);
+        }
+      },
       { spec: 'Retained duplicate bytes drop to zero', check: async () => await expect(page.getByTestId('duplicate-garbage-bytes')).toHaveText('0') },
       { spec: 'Deduplicate button disables when no duplicate bytes remain', check: async () => await expect(page.getByTestId('deduplicate-duplicates')).toBeDisabled() }
     ]

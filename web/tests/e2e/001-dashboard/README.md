@@ -32,6 +32,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 - [x] Scan job completed
 - [x] Latest progress message is visible
 - [x] Latest progress message is capped at 60 visible characters
+- [x] Job panel has a stable reserved width
 - [x] Full job log is hidden by default
 - [x] Source last scan is no longer Never
 - [x] Source scan button is re-enabled
@@ -57,6 +58,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 **Verifications:**
 - [x] Deduplication job completed
 - [x] Deduplication progress reports released bytes
+- [x] Job panel width does not change for deduplication progress
 - [x] Retained duplicate bytes drop to zero
 - [x] Deduplicate button disables when no duplicate bytes remain
 

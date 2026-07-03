@@ -398,7 +398,7 @@
       {/if}
     </section>
 
-    <section aria-labelledby="job-heading">
+    <section aria-labelledby="job-heading" data-testid="job-panel">
       <div class="section-heading">
         <h2 id="job-heading">Job status</h2>
         {#if activeJob && activeJob.progress.length > 0}
@@ -582,8 +582,12 @@
 
   .grid {
     display: grid;
-    grid-template-columns: 1.2fr 0.8fr;
+    grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
     gap: 16px;
+  }
+
+  .grid > section {
+    min-width: 0;
   }
 
   form {
@@ -630,12 +634,15 @@
 
   .compact-line {
     box-sizing: border-box;
+    display: block;
     width: 100%;
-    max-width: 760px;
+    max-width: none;
+    min-width: 0;
     min-height: 18px;
     margin: 8px 0 0;
     overflow: hidden;
     white-space: nowrap;
+    text-overflow: ellipsis;
     color: #202124;
   }
 
@@ -645,7 +652,8 @@
 
   .job-progress {
     width: 100%;
-    max-width: 760px;
+    max-width: none;
+    min-width: 0;
     margin-top: 8px;
     display: grid;
     gap: 4px;
