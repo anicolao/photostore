@@ -190,6 +190,10 @@ func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causatio
 	path := filepath.Join(s.Root, filepath.FromSlash(candidate.StorageKey))
 	observation, extractErr := extractJPEGMetadata(path)
 	if extractErr != nil {
+		existing, hasSuccess, err = s.metadataFields(candidate.ContentRef)
+		if err != nil {
+			return "", err
+		}
 		if hasSuccess {
 			return s.appendMetadataMismatch(candidate, causationID, existing, nil, extractErr.Error())
 		}
@@ -205,6 +209,10 @@ func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causatio
 			return "", err
 		}
 		return "failed", nil
+	}
+	existing, hasSuccess, err = s.metadataFields(candidate.ContentRef)
+	if err != nil {
+		return "", err
 	}
 	if hasSuccess {
 		if reflect.DeepEqual(existing, observation.Fields) {

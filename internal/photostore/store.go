@@ -1065,8 +1065,9 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 		_, err = tx.Exec(`insert or replace into scans(scan_id,status,started_at_ms,completed_at_ms,stats_json) values(?,?,coalesce((select started_at_ms from scans where scan_id=?),0),?,?)`, str(ev.Payload["scan_id"]), "failed", str(ev.Payload["scan_id"]), int64Value(ev.Payload["failed_at_ms"]), mustJSON(ev.Payload["stats"]))
 	case "PhotoMetadataExtracted":
 		extractor := mapValue(ev.Payload["extractor"])
-		_, err = tx.Exec(`insert or ignore into content_metadata values(?,?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["extracted_at_ms"]), pj("fields"), pj("warnings"))
-		if err == nil {
+		var result sql.Result
+		result, err = tx.Exec(`insert or ignore into content_metadata values(?,?,?,?,?,?,?,?,?,?)`, str(ev.Payload["content_ref"]), str(extractor["name"]), int64Value(extractor["version"]), ev.EventID, str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), int64Value(ev.Payload["extracted_at_ms"]), pj("fields"), pj("warnings"))
+		if err == nil && rowsAffected(result) > 0 {
 			err = reducePhotoCaptureTime(tx, ev, extractor)
 		}
 	case "PhotoMetadataExtractionFailed":
@@ -1097,6 +1098,14 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 func advanceProjectionCursor(tx *sql.Tx, ev Event, nextOffset int64) error {
 	_, err := tx.Exec(`insert or replace into projection_state(projection_name,log_path,next_offset,event_id,recorded_at_ms) values(?,?,?,?,?)`, "main", "events/events.jsonl", nextOffset, ev.EventID, ev.RecordedAtMS)
 	return err
+}
+
+func rowsAffected(result sql.Result) int64 {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return rows
 }
 
 func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRootID, sourceKind, path, rel, invID, entryID string, report *ScanReport, reportMu *sync.Mutex) error {
@@ -1165,11 +1174,10 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 			report.ContentAddressesMaterialized++
 		})
 	}
+	s.contentMu.Unlock()
 	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key), sourceKind); err != nil {
-		s.contentMu.Unlock()
 		return err
 	}
-	s.contentMu.Unlock()
 	return nil
 }
 
