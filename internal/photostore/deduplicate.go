@@ -35,6 +35,7 @@ type duplicateCandidate struct {
 	ContentRef         string
 	AcquiredStorageKey string
 	Size               int64
+	CASExistedAtIngest bool
 }
 
 type fileVerification struct {
@@ -68,11 +69,11 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 			"type": "retained_source_objects",
 		},
 		"verification": map[string]any{
-			"hash_algorithm":                 "sha256",
-			"requires_byte_comparison":       true,
-			"requires_canonical_rehash":      true,
-			"requires_duplicate_rehash":      true,
-			"delete_duplicate_before_relink": true,
+			"hash_algorithm":            "sha256",
+			"requires_byte_comparison":  true,
+			"requires_canonical_rehash": true,
+			"requires_duplicate_rehash": true,
+			"atomic_relink":             true,
 		},
 		"strategy": dedupStrategyPayload(),
 	})
@@ -154,7 +155,9 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 			continue
 		}
 		summary.Deduplicated++
-		summary.BytesReleased += candidateResult.Result.Size
+		if candidate.CASExistedAtIngest {
+			summary.BytesReleased += candidateResult.Result.Size
+		}
 		progressCountf(progress, processed, summary.Candidates, "deduplicated %s (%d bytes via %s)", candidate.StoredObjectID, candidateResult.Result.Size, candidateResult.Method)
 	}
 	if appendErr != nil {
@@ -170,7 +173,7 @@ func dedupWorkers() int {
 
 func (s *Store) duplicateCandidates() ([]duplicateCandidate, error) {
 	rows, err := s.DB.Query(`
-		select scl.source_occurrence_id, scl.stored_object_id, scl.content_ref, st.acquired_storage_key
+		select scl.source_occurrence_id, scl.stored_object_id, scl.content_ref, st.acquired_storage_key, scl.cas_existed_at_ingest
 		from source_content_links scl
 		join stored_objects st on st.stored_object_id = scl.stored_object_id
 		where not exists (
@@ -187,7 +190,7 @@ func (s *Store) duplicateCandidates() ([]duplicateCandidate, error) {
 	var out []duplicateCandidate
 	for rows.Next() {
 		var candidate duplicateCandidate
-		if err := rows.Scan(&candidate.SourceOccurrenceID, &candidate.StoredObjectID, &candidate.ContentRef, &candidate.AcquiredStorageKey); err != nil {
+		if err := rows.Scan(&candidate.SourceOccurrenceID, &candidate.StoredObjectID, &candidate.ContentRef, &candidate.AcquiredStorageKey, &candidate.CASExistedAtIngest); err != nil {
 			return nil, err
 		}
 		_, _, candidate.Size = parseContentRef(candidate.ContentRef)
@@ -256,13 +259,15 @@ func (s *Store) verifyAndDeduplicateCandidate(candidate duplicateCandidate) (fil
 	if result.CanonicalHash != expectedHash || result.DuplicateHash != expectedHash {
 		return fileVerification{}, "", fmt.Errorf("verified hash mismatch for %s", candidate.ContentRef)
 	}
-	if err := os.Remove(duplicatePath); err != nil {
+	tmpPath := duplicatePath + ".dedup-" + newID("tmp") + ".tmp"
+	defer os.Remove(tmpPath)
+	if err := os.Link(canonicalPath, tmpPath); err != nil {
 		return result, "", dedupRelinkError{err: err}
 	}
-	if err := os.Link(canonicalPath, duplicatePath); err != nil {
+	if err := chmodCompleteFile(tmpPath); err != nil {
 		return result, "", dedupRelinkError{err: err}
 	}
-	if err := chmodCompleteFile(duplicatePath); err != nil {
+	if err := os.Rename(tmpPath, duplicatePath); err != nil {
 		return result, "", dedupRelinkError{err: err}
 	}
 	return result, "hard_link", nil
@@ -291,8 +296,8 @@ func verifyDuplicateFiles(canonicalPath, duplicatePath string) (fileVerification
 	bufA := make([]byte, 1024*1024)
 	bufB := make([]byte, 1024*1024)
 	for {
-		nA, errA := canonical.Read(bufA)
-		nB, errB := duplicate.Read(bufB)
+		nA, errA := io.ReadFull(canonical, bufA)
+		nB, errB := io.ReadFull(duplicate, bufB)
 		if nA > 0 {
 			_, _ = canonicalHash.Write(bufA[:nA])
 		}
@@ -309,7 +314,7 @@ func verifyDuplicateFiles(canonicalPath, duplicatePath string) (fileVerification
 				BytesEqual:    false,
 			}, nil
 		}
-		if errA == io.EOF && errB == io.EOF {
+		if isEOFRead(errA) && isEOFRead(errB) {
 			return fileVerification{
 				Size:          duplicateInfo.Size(),
 				CanonicalHash: hex.EncodeToString(canonicalHash.Sum(nil)),
@@ -317,11 +322,15 @@ func verifyDuplicateFiles(canonicalPath, duplicatePath string) (fileVerification
 				BytesEqual:    true,
 			}, nil
 		}
-		if errA != nil && errA != io.EOF {
+		if errA != nil && !isEOFRead(errA) {
 			return fileVerification{}, errA
 		}
-		if errB != nil && errB != io.EOF {
+		if errB != nil && !isEOFRead(errB) {
 			return fileVerification{}, errB
 		}
 	}
+}
+
+func isEOFRead(err error) bool {
+	return err == io.EOF || err == io.ErrUnexpectedEOF
 }

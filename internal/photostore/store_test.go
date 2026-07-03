@@ -366,8 +366,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Candidates != 2 || summary.Deduplicated != 2 || summary.BytesReleased != int64(2*len(content)) {
-		t.Fatalf("deduplicate summary = %#v, want both acquired files released", summary)
+	if summary.Candidates != 2 || summary.Deduplicated != 2 || summary.BytesReleased != int64(len(content)) {
+		t.Fatalf("deduplicate summary = %#v, want retained duplicate bytes released", summary)
 	}
 	after, err := st.Summary()
 	if err != nil {
