@@ -511,20 +511,28 @@ The system should support:
 - Schema evolution through versioned events.
 - Export to simple directory trees for escape hatches.
 
+## Current MVP Decisions
+
+The ingestion MVP has resolved the first implementation slice this way:
+
+- Event log storage is append-only JSONL with one event per line.
+- SQLite is the first projection database.
+- Event ordering is single-writer per local store; multi-device append is out of scope.
+- The first UI is a local loopback web server, not a sharing surface.
+- The first media type is JPEG by `.jpg`/`.jpeg` extension.
+- Metadata extraction runs during scan for new content and can be refreshed explicitly for unattempted content.
+- Originals and acquired source objects are immutable `0400` files. Retained duplicates are replaced only by the explicit verify-and-deduplicate workflow after hash recomputation and byte comparison.
+
 ## Open Design Questions
 
-These questions should be resolved before implementation planning:
+These questions remain outside the ingestion MVP:
 
-- What event log storage format should be used initially?
-- Should the first projection database be SQLite or Postgres?
-- How strongly should event ordering be guaranteed across concurrent devices?
 - What is the minimal useful recipe operator set?
 - How should mobile or offline clients append events?
 - How should writable filesystem views be implemented?
-- What sharing model is needed first: local network, private web, or public web?
-- What media types are first-class in version one?
-- How much metadata should be extracted synchronously during import?
-- What is the deletion and retention policy for originals?
+- What sharing model is needed after the local UI?
+- What media types beyond JPEG should be first-class in version one?
+- What is the long-term deletion and retention policy for originals?
 
 ## Architectural Summary
 

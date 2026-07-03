@@ -210,37 +210,41 @@ Fixture helpers should:
   names or fixture labels.
 - Clean temporary directories after the test unless debugging is enabled.
 
-## Initial Scenarios
+## Current Scenario
 
 ### 001 Dashboard
 
-Purpose: prove that `photostore serve` renders an initialized empty store.
+Purpose: prove the current tracer-bullet UI path end to end: initialize a store,
+register a source, scan, inspect compact progress, deduplicate retained
+duplicates, drill into thumbnails and image metadata, browse by capture date,
+review metadata failures, and trigger metadata refresh.
 
 Steps:
 
 - Load the dashboard.
 - Verify store status is visible.
 - Verify source, inventory, scan, and event sections render empty states.
-- Capture the empty dashboard screenshot.
-
-### 002 Source Scan
-
-Purpose: prove that the browser can run the basic JPEG source scan.
-
-Fixture:
-
-- One source root with two unique `.jpg` files and one duplicate `.jpeg` file.
-
-Steps:
-
 - Add the source root.
 - Start a scan.
 - Wait for the scan job to finish.
 - Verify the report shows acquired files, duplicate acquisitions, and retained
   duplicate garbage bytes.
-- Verify recent events updated.
+- Verify reload restores the latest completed job state.
+- Verify duplicate deduplication updates retained duplicate bytes.
+- Verify scan rows can restore job status and open the job log.
+- Verify acquired-count drilldown renders a thumbnail grid.
+- Verify image detail shows bytes and a human-readable EXIF panel.
+- Verify date browsing de-duplicates content by capture date.
+- Verify metadata review separates large failures from likely crops or thumbnails.
+- Verify metadata refresh reports no missing work after scan-time extraction.
 
-### 003 Historical Inventory
+## Future Scenarios
+
+The broad `001-dashboard` scenario is useful while the UI is still small, but
+new features should prefer smaller tracer-bullet scenarios when they can be
+validated independently. Historical inventory remains the first candidate split.
+
+### 002 Historical Inventory
 
 Purpose: prove that historical inventory scans use trusted hashes to skip work.
 
