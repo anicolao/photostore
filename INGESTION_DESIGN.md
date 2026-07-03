@@ -356,7 +356,9 @@ V0 should parse historical inventory files conservatively:
 - Do not require paths to exist.
 - Do not assume every parsed hash is media.
 - Ignore non-hash lines with a parse warning count.
-- Support hash-only files such as `.lookup` and `all`.
+- Support hash-plus-path files such as `.toc` and `.shasums.toc`.
+
+Hash-only files such as `.lookup` and `all` are part of the broader historical inventory model, but they are not implemented in the current MVP parser. They should be added as an explicit parser/version update rather than silently accepted by the hash-plus-path parser.
 
 For git-annex object paths such as:
 

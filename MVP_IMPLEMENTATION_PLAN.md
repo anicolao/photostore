@@ -985,6 +985,7 @@ Parser reducer behavior:
 
 - Keep lines whose first field is a 64-character hex SHA-256.
 - For `toc` and `missing_list`, keep only entries whose remaining text ends in `.jpg` or `.jpeg`, case-insensitively.
+- Hash-only inventory files such as `.lookup` and `all` are not supported by the MVP parser.
 - Normalize SHA-256 to lowercase.
 - Extract size from git-annex-style names such as `SHA256E-s12345--HASH.jpg` when present.
 - Preserve the raw line in the projection.
@@ -1024,3 +1025,4 @@ The MVP is complete when:
 - The SQLite projections can be deleted and rebuilt from `events.jsonl` and stored objects.
 - A new hash verifier version can be run over retained acquired objects and CAS objects without needing the original external files.
 - Corrected CAS materialization can use a new namespace such as `cas/sha256/v2/...` without changing historical events.
+- Hash-only inventory files such as `.lookup` and `all` are documented as deferred.
