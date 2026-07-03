@@ -275,7 +275,7 @@ func (s *Server) handleUndatedPhotos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStoredObjectBytes(w http.ResponseWriter, r *http.Request) {
-	file, err := s.store.StoredObjectFile(r.PathValue("stored_object_id"))
+	file, err := s.store.CanonicalObjectFile(r.PathValue("stored_object_id"))
 	if err != nil {
 		writeErrorStatus(w, http.StatusNotFound, err)
 		return

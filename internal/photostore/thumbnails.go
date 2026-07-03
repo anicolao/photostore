@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const thumbnailMaxDimension = 240
@@ -119,7 +118,7 @@ func (s *Store) EnsureThumbnailForObject(storedObjectID string) error {
 }
 
 func (s *Store) writeThumbnailForObject(storedObjectID, dstPath string) error {
-	src, err := s.StoredObjectFile(storedObjectID)
+	src, err := s.CanonicalObjectFile(storedObjectID)
 	if err != nil {
 		return err
 	}
@@ -127,7 +126,11 @@ func (s *Store) writeThumbnailForObject(storedObjectID, dstPath string) error {
 }
 
 func (s *Store) ThumbnailFile(storedObjectID string) (string, bool, error) {
-	path, err := s.thumbnailPath(storedObjectID)
+	contentRef, err := s.contentRefForStoredObject(storedObjectID)
+	if err != nil {
+		return "", false, err
+	}
+	path, err := s.thumbnailPath(contentRef)
 	if err != nil {
 		return "", false, err
 	}
@@ -141,11 +144,12 @@ func (s *Store) ThumbnailFile(storedObjectID string) (string, bool, error) {
 	return "", false, err
 }
 
-func (s *Store) thumbnailPath(storedObjectID string) (string, error) {
-	if storedObjectID == "" || strings.ContainsAny(storedObjectID, `/\`) || storedObjectID == "." || storedObjectID == ".." {
-		return "", fmt.Errorf("invalid stored object id %q", storedObjectID)
+func (s *Store) thumbnailPath(contentRef string) (string, error) {
+	algo, hash, _ := parseContentRef(contentRef)
+	if algo != "sha256" || !isSHA256(hash) {
+		return "", fmt.Errorf("invalid content ref %q", contentRef)
 	}
-	return filepath.Join(s.Root, "thumbnails", "jpeg", fmt.Sprint(thumbnailMaxDimension), thumbnailRendererVersion, storedObjectID+".jpg"), nil
+	return filepath.Join(s.Root, "thumbnails", "jpeg", fmt.Sprint(thumbnailMaxDimension), thumbnailRendererVersion, hash[:2], hash[2:4], hash+".jpg"), nil
 }
 
 func writeJPEGThumbnail(srcPath, dstPath string) error {

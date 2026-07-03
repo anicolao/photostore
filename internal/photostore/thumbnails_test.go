@@ -55,6 +55,66 @@ func TestReadJPEGOrientation(t *testing.T) {
 	}
 }
 
+func TestThumbnailsAreStoredPerContent(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	content := twoColorJPEG(t, 16, 12)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), content)
+	mustWrite(t, filepath.Join(sourcePath, "B.jpeg"), content)
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(sourcePath, "source"); err != nil {
+		t.Fatal(err)
+	}
+	scanID, err := st.ScanSources(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := st.EnsureThumbnailsForScan(scanID, nil)
+	if summary.Generated != 1 || summary.Existing != 1 || summary.Failed != 0 {
+		t.Fatalf("thumbnail summary = %#v, want one generated and one content duplicate already present", summary)
+	}
+	files, err := st.AcquiredFiles(scanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("acquired files = %d, want 2", len(files))
+	}
+	first, ok, err := st.ThumbnailFile(files[0].StoredObjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("first content thumbnail missing")
+	}
+	second, ok, err := st.ThumbnailFile(files[1].StoredObjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("second content thumbnail missing")
+	}
+	if first != second {
+		t.Fatalf("thumbnail paths = %q and %q, want same content thumbnail", first, second)
+	}
+
+	secondScanID, err := st.ScanSources(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSummary := st.EnsureThumbnailsForScan(secondScanID, nil)
+	if secondSummary.Generated != 0 || secondSummary.Existing != 2 || secondSummary.Failed != 0 {
+		t.Fatalf("second thumbnail summary = %#v, want no duplicate work", secondSummary)
+	}
+}
+
 func twoColorJPEG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
