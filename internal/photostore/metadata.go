@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 )
@@ -32,6 +33,8 @@ type metadataCandidate struct {
 	ScanID             string
 	ContentRef         string
 	StorageKey         string
+	SourceKind         string
+	Phase              string
 }
 
 type metadataObservation struct {
@@ -71,6 +74,7 @@ func (s *Store) RefreshMissingMetadata(progress ProgressFunc) (MetadataRefreshSu
 		go func() {
 			defer wg.Done()
 			for candidate := range jobs {
+				candidate.Phase = "metadata_refresh_missing"
 				result, err := s.recordMetadataForCandidate(candidate, &requestEventID)
 				results <- metadataCandidateResult{Result: result, Err: err}
 			}
@@ -124,7 +128,7 @@ func metadataWorkers() int {
 
 func (s *Store) metadataMissingCandidates() ([]metadataCandidate, error) {
 	rows, err := s.DB.Query(`
-		select so.stored_object_id, so.source_occurrence_id, so.scan_id, scl.content_ref, st.acquired_storage_key
+		select so.stored_object_id, so.source_occurrence_id, so.scan_id, scl.content_ref, st.acquired_storage_key, so.source_kind
 		from source_occurrences so
 		join source_content_links scl on scl.source_occurrence_id = so.source_occurrence_id
 		join stored_objects st on st.stored_object_id = so.stored_object_id
@@ -150,7 +154,7 @@ func (s *Store) metadataMissingCandidates() ([]metadataCandidate, error) {
 	var out []metadataCandidate
 	for rows.Next() {
 		var c metadataCandidate
-		if err := rows.Scan(&c.StoredObjectID, &c.SourceOccurrenceID, &c.ScanID, &c.ContentRef, &c.StorageKey); err != nil {
+		if err := rows.Scan(&c.StoredObjectID, &c.SourceOccurrenceID, &c.ScanID, &c.ContentRef, &c.StorageKey, &c.SourceKind); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -158,35 +162,37 @@ func (s *Store) metadataMissingCandidates() ([]metadataCandidate, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) recordMetadataForSourceFile(scanID string, causationID *string, sourceOccurrenceID, storedObjectID, contentRef, acquiredKey string) error {
+func (s *Store) recordMetadataForSourceFile(scanID string, causationID *string, sourceOccurrenceID, storedObjectID, contentRef, acquiredKey, sourceKind string) error {
 	_, err := s.recordMetadataForCandidate(metadataCandidate{
 		StoredObjectID:     storedObjectID,
 		SourceOccurrenceID: sourceOccurrenceID,
 		ScanID:             scanID,
 		ContentRef:         contentRef,
 		StorageKey:         acquiredKey,
+		SourceKind:         sourceKind,
+		Phase:              "ingestion_scan",
 	}, causationID)
 	return err
 }
 
 func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causationID *string) (string, error) {
-	_, hasSuccess, err := s.metadataFields(candidate.ContentRef)
+	existing, hasSuccess, err := s.metadataFields(candidate.ContentRef)
 	if err != nil {
 		return "", err
-	}
-	if hasSuccess {
-		return "skipped", nil
 	}
 	hasFailure, err := s.metadataFailureExists(candidate.ContentRef)
 	if err != nil {
 		return "", err
 	}
-	if hasFailure {
+	if hasFailure && !hasSuccess {
 		return "skipped", nil
 	}
 	path := filepath.Join(s.Root, filepath.FromSlash(candidate.StorageKey))
 	observation, extractErr := extractJPEGMetadata(path)
 	if extractErr != nil {
+		if hasSuccess {
+			return s.appendMetadataMismatch(candidate, causationID, existing, nil, extractErr.Error())
+		}
 		if err := s.appendEvent("PhotoMetadataExtractionFailed", causationID, &candidate.ScanID, map[string]any{
 			"stored_object_id":     candidate.StoredObjectID,
 			"source_occurrence_id": candidate.SourceOccurrenceID,
@@ -200,6 +206,12 @@ func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causatio
 		}
 		return "failed", nil
 	}
+	if hasSuccess {
+		if reflect.DeepEqual(existing, observation.Fields) {
+			return "skipped", nil
+		}
+		return s.appendMetadataMismatch(candidate, causationID, existing, observation.Fields, "")
+	}
 	if err := s.appendEvent("PhotoMetadataExtracted", causationID, &candidate.ScanID, map[string]any{
 		"stored_object_id":     candidate.StoredObjectID,
 		"source_occurrence_id": candidate.SourceOccurrenceID,
@@ -207,8 +219,8 @@ func (s *Store) recordMetadataForCandidate(candidate metadataCandidate, causatio
 		"content_ref":          candidate.ContentRef,
 		"extractor":            metadataExtractorPayload(),
 		"extraction_context": map[string]any{
-			"phase":       "ingestion_scan",
-			"source_kind": "source_root",
+			"phase":       metadataPhase(candidate.Phase),
+			"source_kind": metadataSourceKind(candidate.SourceKind),
 		},
 		"extracted_at_ms": nowMS(),
 		"fields":          observation.Fields,
@@ -239,6 +251,20 @@ func (s *Store) appendMetadataMismatch(candidate metadataCandidate, causationID 
 		return "", err
 	}
 	return "issue", nil
+}
+
+func metadataPhase(phase string) string {
+	if phase == "" {
+		return "ingestion_scan"
+	}
+	return phase
+}
+
+func metadataSourceKind(sourceKind string) string {
+	if sourceKind == "" {
+		return "unknown"
+	}
+	return sourceKind
 }
 
 func (s *Store) metadataFields(contentRef string) (map[string]map[string]string, bool, error) {
