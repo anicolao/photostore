@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,8 +30,9 @@ const schemaVersion = 1
 var deterministicIDCounter atomic.Uint64
 
 type Store struct {
-	Root string
-	DB   *sql.DB
+	Root    string
+	DB      *sql.DB
+	eventMu sync.Mutex
 }
 
 type Event struct {
@@ -639,7 +641,7 @@ func (s *Store) Report(scanID string) (*ScanReport, error) {
 func (s *Store) initSchema() error {
 	stmts := []string{
 		`create table if not exists events_applied(event_id text primary key, event_type text, recorded_at_ms integer)`,
-		`create table if not exists projection_state(projection_name text primary key, event_id text, recorded_at_ms integer)`,
+		`create table if not exists projection_state(projection_name text primary key, log_path text, next_offset integer, event_id text, recorded_at_ms integer)`,
 		`create table if not exists source_roots(source_root_id text primary key, root_path text unique, label text, source_type text, policy_json text)`,
 		`create table if not exists stored_objects(stored_object_id text primary key, purpose text, acquired_storage_key text, original_path text, first_event_id text)`,
 		`create table if not exists source_content_links(source_occurrence_id text primary key, stored_object_id text, content_ref text, cas_existed_at_ingest integer, acquired_object_retained integer, link_event_id text)`,
@@ -665,6 +667,9 @@ func (s *Store) initSchema() error {
 			return err
 		}
 	}
+	if err := s.ensureProjectionStateColumns(); err != nil {
+		return err
+	}
 	if err := s.rebuildPhotoCaptureTimeProjection(); err != nil {
 		return err
 	}
@@ -674,12 +679,50 @@ func (s *Store) initSchema() error {
 	return nil
 }
 
+func (s *Store) ensureProjectionStateColumns() error {
+	cols, err := s.tableColumns("projection_state")
+	if err != nil {
+		return err
+	}
+	for name, typ := range map[string]string{
+		"log_path":    "text",
+		"next_offset": "integer",
+	} {
+		if cols[name] {
+			continue
+		}
+		if _, err := s.DB.Exec(fmt.Sprintf(`alter table projection_state add column %s %s`, name, typ)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) tableColumns(table string) (map[string]bool, error) {
+	rows, err := s.DB.Query(`select name from pragma_table_info(?)`, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		cols[name] = true
+	}
+	return cols, rows.Err()
+}
+
 func (s *Store) appendEvent(eventType string, causationID *string, correlationID *string, payload map[string]any) error {
 	_, err := s.appendEventReturnID(eventType, causationID, correlationID, payload)
 	return err
 }
 
 func (s *Store) appendEventReturnID(eventType string, causationID *string, correlationID *string, payload map[string]any) (string, error) {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
 	ev := Event{
 		EventID:       newID("evt"),
 		EventType:     eventType,
@@ -697,7 +740,11 @@ func (s *Store) appendEventReturnID(eventType string, causationID *string, corre
 	if err := s.writeEvent(ev); err != nil {
 		return "", err
 	}
-	if err := s.applyEvent(ev); err != nil {
+	nextOffset, err := s.eventLogSize()
+	if err != nil {
+		return "", err
+	}
+	if err := s.applyEventAt(ev, nextOffset); err != nil {
 		return "", err
 	}
 	return ev.EventID, nil
@@ -721,15 +768,11 @@ func (s *Store) writeEvent(ev Event) error {
 }
 
 func (s *Store) replayUnappliedEvents() error {
-	cursorMS, err := s.projectionCursorTimestamp()
+	cursor, err := s.projectionCursor()
 	if err != nil {
 		return err
 	}
 	path := filepath.Join(s.Root, "events", "events.jsonl")
-	start, err := replayStartOffset(path, cursorMS)
-	if err != nil {
-		return err
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -738,131 +781,80 @@ func (s *Store) replayUnappliedEvents() error {
 		return err
 	}
 	defer f.Close()
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
+	info, err := f.Stat()
+	if err != nil {
 		return err
 	}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024), 1024*1024*16)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
+	if cursor.NextOffset > info.Size() {
+		return fmt.Errorf("projection cursor offset %d is beyond event log size %d", cursor.NextOffset, info.Size())
+	}
+	if _, err := f.Seek(cursor.NextOffset, io.SeekStart); err != nil {
+		return err
+	}
+	offset := cursor.NextOffset
+	r := bufio.NewReaderSize(f, 1024*1024)
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if err == io.EOF && line == "" {
+			return nil
+		}
+		if err == io.EOF && !strings.HasSuffix(line, "\n") {
+			return nil
+		}
+		nextOffset := offset + int64(len(line))
+		offset = nextOffset
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
 		var ev Event
-		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		if err := json.Unmarshal([]byte(trimmed), &ev); err != nil {
 			return err
 		}
-		if err := s.applyEvent(ev); err != nil {
+		if err := s.applyEventAt(ev, nextOffset); err != nil {
 			return err
 		}
 	}
-	return sc.Err()
 }
 
-func (s *Store) projectionCursorTimestamp() (int64, error) {
-	var cursor sql.NullInt64
-	if err := s.DB.QueryRow(`select recorded_at_ms from projection_state where projection_name = ?`, "main").Scan(&cursor); err != nil {
+type projectionCursor struct {
+	NextOffset int64
+}
+
+func (s *Store) projectionCursor() (projectionCursor, error) {
+	var next sql.NullInt64
+	if err := s.DB.QueryRow(`select next_offset from projection_state where projection_name = ?`, "main").Scan(&next); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
+			return projectionCursor{}, nil
 		}
-		return 0, err
+		return projectionCursor{}, err
 	}
-	if !cursor.Valid {
-		return 0, nil
+	if !next.Valid {
+		return projectionCursor{}, nil
 	}
-	return cursor.Int64, nil
+	return projectionCursor{NextOffset: next.Int64}, nil
 }
 
-func replayStartOffset(path string, cursorMS int64) (int64, error) {
-	if cursorMS <= 0 {
-		return 0, nil
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	defer f.Close()
-	info, err := f.Stat()
+func (s *Store) eventLogSize() (int64, error) {
+	info, err := os.Stat(filepath.Join(s.Root, "events", "events.jsonl"))
 	if err != nil {
 		return 0, err
 	}
-	size := info.Size()
-	if size == 0 {
-		return 0, nil
-	}
-	for distance := int64(1024); ; distance *= 2 {
-		if distance >= size {
-			return 0, nil
-		}
-		probe := size - distance
-		start, err := lineStartAtOrBefore(f, probe)
-		if err != nil {
-			return 0, err
-		}
-		ev, ok, err := firstEventAtOffset(f, start)
-		if err != nil {
-			return 0, err
-		}
-		if !ok {
-			continue
-		}
-		if ev.RecordedAtMS < cursorMS {
-			return start, nil
-		}
-	}
-}
-
-func lineStartAtOrBefore(f *os.File, pos int64) (int64, error) {
-	if pos <= 0 {
-		return 0, nil
-	}
-	buf := make([]byte, 4096)
-	for end := pos + 1; end > 0; {
-		start := end - int64(len(buf))
-		if start < 0 {
-			start = 0
-		}
-		n, err := f.ReadAt(buf[:end-start], start)
-		if err != nil && err != io.EOF {
-			return 0, err
-		}
-		for i := n - 1; i >= 0; i-- {
-			if buf[i] == '\n' {
-				return start + int64(i) + 1, nil
-			}
-		}
-		if start == 0 {
-			return 0, nil
-		}
-		end = start
-	}
-	return 0, nil
-}
-
-func firstEventAtOffset(f *os.File, offset int64) (Event, bool, error) {
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return Event{}, false, err
-	}
-	r := bufio.NewReaderSize(f, 1024*1024)
-	line, err := r.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return Event{}, false, err
-	}
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return Event{}, false, nil
-	}
-	var ev Event
-	if err := json.Unmarshal([]byte(line), &ev); err != nil {
-		return Event{}, false, err
-	}
-	return ev, true, nil
+	return info.Size(), nil
 }
 
 func (s *Store) applyEvent(ev Event) error {
+	nextOffset, err := s.eventLogSize()
+	if err != nil {
+		return err
+	}
+	return s.applyEventAt(ev, nextOffset)
+}
+
+func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -874,7 +866,7 @@ func (s *Store) applyEvent(ev Event) error {
 		return err
 	}
 	if applied > 0 {
-		if err := advanceProjectionCursor(tx, ev); err != nil {
+		if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
 			return err
 		}
 		return tx.Commit()
@@ -944,14 +936,14 @@ func (s *Store) applyEvent(ev Event) error {
 	if err != nil {
 		return err
 	}
-	if err := advanceProjectionCursor(tx, ev); err != nil {
+	if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-func advanceProjectionCursor(tx *sql.Tx, ev Event) error {
-	_, err := tx.Exec(`insert or replace into projection_state(projection_name,event_id,recorded_at_ms) values(?,?,?)`, "main", ev.EventID, ev.RecordedAtMS)
+func advanceProjectionCursor(tx *sql.Tx, ev Event, nextOffset int64) error {
+	_, err := tx.Exec(`insert or replace into projection_state(projection_name,log_path,next_offset,event_id,recorded_at_ms) values(?,?,?,?,?)`, "main", "events/events.jsonl", nextOffset, ev.EventID, ev.RecordedAtMS)
 	return err
 }
 
