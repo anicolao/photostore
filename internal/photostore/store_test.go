@@ -3,6 +3,7 @@ package photostore
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,6 +50,80 @@ func TestScanSourcesAcquiresOnlyJPEGs(t *testing.T) {
 	ref := contentRef(sha([]byte("jpeg-one")), int64(len("jpeg-one")))
 	if !st.contentAddressExists(ref) {
 		t.Fatalf("expected CAS object for %s", ref)
+	}
+}
+
+func TestInitExistingStoreDoesNotAppendDuplicateInitializedEvent(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var initializedEvents int
+	if err := st.DB.QueryRow(`select count(*) from events_applied where event_type = 'StoreInitialized'`).Scan(&initializedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if initializedEvents != 1 {
+		t.Fatalf("StoreInitialized events = %d, want 1", initializedEvents)
+	}
+}
+
+func TestEventsIncludeActorHostname(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.AddSourceRoot(t.TempDir(), "source"); err != nil {
+		t.Fatal(err)
+	}
+	ev := latestEventOfType(t, st, "SourceRootRegistered")
+	if _, ok := ev.Actor["hostname"]; !ok {
+		t.Fatalf("actor = %#v, want hostname", ev.Actor)
+	}
+}
+
+func TestIngestionScanFailedUpdatesProjection(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	scanID := "scan_failed"
+	if err := st.appendEvent("IngestionScanStarted", nil, &scanID, map[string]any{
+		"scan_id":       scanID,
+		"started_at_ms": int64(123),
+		"source_roots":  []map[string]any{},
+		"policy":        map[string]any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report := &ScanReport{ScanID: scanID, CandidateFilesSeen: 1}
+	if err := st.appendScanFailed(scanID, report, errors.New("boom")); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var started, completed int64
+	var statsJSON string
+	if err := st.DB.QueryRow(`select status, started_at_ms, completed_at_ms, stats_json from scans where scan_id = ?`, scanID).Scan(&status, &started, &completed, &statsJSON); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("scan status = %q, want failed", status)
+	}
+	if started != 123 || completed == 0 {
+		t.Fatalf("scan times started=%d completed=%d, want preserved start and failure time", started, completed)
+	}
+	if !strings.Contains(statsJSON, `"candidate_files_seen":1`) {
+		t.Fatalf("stats = %s, want candidate count", statsJSON)
 	}
 }
 

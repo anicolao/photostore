@@ -30,6 +30,7 @@ var fallbackStatic embed.FS
 type ServerOptions struct {
 	APIOnly     bool
 	ListenAddr  string
+	BuildDir    string
 	ScanOptions ScanOptions
 }
 
@@ -37,6 +38,7 @@ type Server struct {
 	store       *Store
 	apiOnly     bool
 	allowedHost string
+	buildDir    string
 	scanOptions ScanOptions
 	mux         *http.ServeMux
 	mu          sync.Mutex
@@ -71,6 +73,7 @@ func NewServer(store *Store, opts ServerOptions) http.Handler {
 		store:       store,
 		apiOnly:     opts.APIOnly,
 		allowedHost: normalizeHost(opts.ListenAddr),
+		buildDir:    opts.BuildDir,
 		scanOptions: serverScanOptions(opts.ScanOptions),
 		mux:         http.NewServeMux(),
 		jobs:        map[string]*Job{},
@@ -855,7 +858,7 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if serveBuildFile(w, r) {
+	if s.serveBuildFile(w, r) {
 		return
 	}
 	if r.URL.Path != "/" {
@@ -866,8 +869,11 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 }
 
-func serveBuildFile(w http.ResponseWriter, r *http.Request) bool {
-	root := filepath.Join("web", "build")
+func (s *Server) serveBuildFile(w http.ResponseWriter, r *http.Request) bool {
+	if s.buildDir == "" {
+		return false
+	}
+	root := s.buildDir
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
 		return false
