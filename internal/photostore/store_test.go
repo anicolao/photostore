@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -126,6 +128,49 @@ func TestOpenWithoutProjectionCursorReplaysWholeLogToRepairOlderHoles(t *testing
 		}
 	}
 	assertProjectionOffsetAtLogEnd(t, st)
+}
+
+func TestConcurrentStoreHandlesSerializeEventLogCursor(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	other, err := Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+
+	stores := []*Store{st, other}
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			store := stores[i%len(stores)]
+			_, err := store.AddSourceRoot(filepath.Join(root, "source", strconv.Itoa(i)), "source-"+strconv.Itoa(i))
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertProjectionOffsetAtLogEnd(t, st)
+	var sources int
+	if err := st.DB.QueryRow(`select count(*) from source_roots`).Scan(&sources); err != nil {
+		t.Fatal(err)
+	}
+	if sources != 20 {
+		t.Fatalf("source roots = %d, want 20", sources)
+	}
 }
 
 func assertProjectionOffsetAtLogEnd(t *testing.T, st *Store) {

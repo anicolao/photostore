@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -736,17 +737,33 @@ func (s *Store) appendEventReturnID(eventType string, causationID *string, corre
 		CorrelationID: correlationID,
 		Payload:       payload,
 	}
-	if err := s.writeEvent(ev); err != nil {
-		return "", err
-	}
-	nextOffset, err := s.eventLogSize()
-	if err != nil {
-		return "", err
-	}
-	if err := s.applyEventAt(ev, nextOffset); err != nil {
+	if err := s.withEventLogLock(func() error {
+		if err := s.writeEvent(ev); err != nil {
+			return err
+		}
+		nextOffset, err := s.eventLogSize()
+		if err != nil {
+			return err
+		}
+		return s.applyEventAt(ev, nextOffset)
+	}); err != nil {
 		return "", err
 	}
 	return ev.EventID, nil
+}
+
+func (s *Store) withEventLogLock(fn func() error) error {
+	lockPath := filepath.Join(s.Root, "events", "events.lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
 }
 
 func (s *Store) writeEvent(ev Event) error {
@@ -767,6 +784,10 @@ func (s *Store) writeEvent(ev Event) error {
 }
 
 func (s *Store) replayUnappliedEvents() error {
+	return s.withEventLogLock(s.replayUnappliedEventsLocked)
+}
+
+func (s *Store) replayUnappliedEventsLocked() error {
 	cursor, err := s.projectionCursor()
 	if err != nil {
 		return err
@@ -846,11 +867,15 @@ func (s *Store) eventLogSize() (int64, error) {
 }
 
 func (s *Store) applyEvent(ev Event) error {
-	nextOffset, err := s.eventLogSize()
-	if err != nil {
-		return err
-	}
-	return s.applyEventAt(ev, nextOffset)
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	return s.withEventLogLock(func() error {
+		nextOffset, err := s.eventLogSize()
+		if err != nil {
+			return err
+		}
+		return s.applyEventAt(ev, nextOffset)
+	})
 }
 
 func (s *Store) applyEventAt(ev Event, nextOffset int64) error {

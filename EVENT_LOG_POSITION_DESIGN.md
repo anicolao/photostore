@@ -39,14 +39,16 @@ advanced the cursor.
 On startup:
 
 1. Open the projection database.
-2. Read `projection_state.next_offset` for `main`.
-3. If the cursor is absent, use offset `0`. This is the one-time migration path
+2. Acquire the store's event log lock.
+3. Read `projection_state.next_offset` for `main`.
+4. If the cursor is absent, use offset `0`. This is the one-time migration path
    for stores created before offset cursoring.
-4. Open `events/events.jsonl`.
-5. Seek to `next_offset`.
-6. Read complete newline-terminated records forward.
-7. Apply each event and advance `next_offset` to the byte after that event line
+5. Open `events/events.jsonl`.
+6. Seek to `next_offset`.
+7. Read complete newline-terminated records forward.
+8. Apply each event and advance `next_offset` to the byte after that event line
    in the same SQLite transaction as the reducer writes.
+9. Release the event log lock.
 
 If the log ends with a partial non-newline-terminated record, replay ignores
 that incomplete tail and does not advance the cursor through it.
@@ -70,13 +72,15 @@ recovery cases where a cursor is moved backward.
 
 Normal event writes are:
 
-1. Serialize writes within the process.
+1. Acquire the store's event log lock. This is an interprocess file lock, not
+   only an in-process mutex.
 2. Append one JSON line to `events/events.jsonl`.
 3. `fsync` the event log file.
 4. Stat the event log to get the new EOF.
 5. Apply the event to projections.
 6. In the projection transaction, advance `projection_state.next_offset` to the
    new EOF.
+7. Release the event log lock.
 
 Crash outcomes:
 
