@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -30,6 +31,36 @@ func TestCloneJobSerializesEmptyProgressArray(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"progress":[]`) {
 		t.Fatalf("job JSON missing empty progress array: %s", raw)
+	}
+}
+
+func TestServerPrunesOnlyOldCompletedJobs(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	server := NewServer(st, ServerOptions{}).(*Server)
+	server.jobsMu.Lock()
+	defer server.jobsMu.Unlock()
+	for i := 0; i < completedJobRetentionLimit+5; i++ {
+		id := fmt.Sprintf("job_done_%03d", i)
+		server.jobs[id] = &Job{JobID: id, Kind: "test", Status: "completed", StartedAtMS: int64(i)}
+	}
+	server.jobs["job_running"] = &Job{JobID: "job_running", Kind: "test", Status: "running", StartedAtMS: -1}
+	server.pruneCompletedJobsLocked(completedJobRetentionLimit)
+	got := len(server.jobs)
+	if got != completedJobRetentionLimit+1 {
+		t.Fatalf("jobs retained = %d, want %d", got, completedJobRetentionLimit+1)
+	}
+	if _, ok := server.jobs["job_running"]; !ok {
+		t.Fatal("running job was pruned")
+	}
+	if _, ok := server.jobs["job_done_000"]; ok {
+		t.Fatal("oldest completed job was retained")
+	}
+	if _, ok := server.jobs["job_done_104"]; !ok {
+		t.Fatal("newest completed job was pruned")
 	}
 }
 
