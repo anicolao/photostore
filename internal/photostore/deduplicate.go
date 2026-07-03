@@ -25,7 +25,7 @@ type DeduplicateSummary struct {
 
 const (
 	dedupStrategyName    = "hard_link"
-	dedupStrategyVersion = 2
+	dedupStrategyVersion = 3
 )
 
 type duplicateCandidate struct {
@@ -57,7 +57,7 @@ func (s *Store) VerifyAndDeduplicate(progress ProgressFunc) (DeduplicateSummary,
 		"request_id":      requestID,
 		"requested_at_ms": nowMS(),
 		"selector": map[string]any{
-			"type": "retained_duplicate_source_objects",
+			"type": "retained_source_objects",
 		},
 		"verification": map[string]any{
 			"hash_algorithm":                 "sha256",
@@ -126,8 +126,7 @@ func (s *Store) duplicateCandidates() ([]duplicateCandidate, error) {
 		select scl.source_occurrence_id, scl.stored_object_id, scl.content_ref, st.acquired_storage_key
 		from source_content_links scl
 		join stored_objects st on st.stored_object_id = scl.stored_object_id
-		where scl.cas_existed_at_ingest = 1
-			and not exists (
+		where not exists (
 				select 1 from duplicate_deduplications dd
 				where dd.source_occurrence_id = scl.source_occurrence_id
 					and dd.strategy_name = ?

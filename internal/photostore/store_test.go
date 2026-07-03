@@ -162,8 +162,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.RetainedDuplicateBytes != int64(len(content)) {
-		t.Fatalf("retained duplicate bytes before dedup = %d, want %d", before.RetainedDuplicateBytes, len(content))
+	if before.RetainedDuplicateBytes != int64(2*len(content)) {
+		t.Fatalf("retained duplicate bytes before dedup = %d, want %d", before.RetainedDuplicateBytes, 2*len(content))
 	}
 	duplicatePath := retainedDuplicatePath(t, st)
 	canonicalPath := retainedDuplicateCanonicalPath(t, st)
@@ -173,8 +173,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Candidates != 1 || summary.Deduplicated != 1 || summary.BytesReleased != int64(len(content)) {
-		t.Fatalf("deduplicate summary = %#v, want one released duplicate", summary)
+	if summary.Candidates != 2 || summary.Deduplicated != 2 || summary.BytesReleased != int64(2*len(content)) {
+		t.Fatalf("deduplicate summary = %#v, want both acquired files released", summary)
 	}
 	after, err := st.Summary()
 	if err != nil {
@@ -193,8 +193,12 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	assertSameFile(t, duplicatePath, canonicalPath)
 	assertFileMode(t, duplicatePath, 0o600)
 	assertFileMode(t, canonicalPath, 0o600)
+	allAcquiredPaths := retainedAcquiredPaths(t, st)
+	for _, path := range allAcquiredPaths {
+		assertSameFile(t, path, canonicalPath)
+	}
 	var retained int
-	if err := st.DB.QueryRow(`select count(*) from source_content_links where acquired_object_retained = 1 and cas_existed_at_ingest = 1`).Scan(&retained); err != nil {
+	if err := st.DB.QueryRow(`select count(*) from source_content_links where acquired_object_retained = 1`).Scan(&retained); err != nil {
 		t.Fatal(err)
 	}
 	if retained != 0 {
@@ -204,8 +208,8 @@ func TestVerifyAndDeduplicateReleasesDuplicateBytes(t *testing.T) {
 	if err := st.DB.QueryRow(`select count(*) from events_applied where event_type = 'DuplicateSourceObjectDeduplicated'`).Scan(&events); err != nil {
 		t.Fatal(err)
 	}
-	if events != 1 {
-		t.Fatalf("dedup events = %d, want 1", events)
+	if events != 2 {
+		t.Fatalf("dedup events = %d, want 2", events)
 	}
 }
 
@@ -263,15 +267,15 @@ func TestStaleDeduplicationStrategyRequiresReassessment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stale.RetainedDuplicateBytes != int64(len(content)) {
-		t.Fatalf("stale retained duplicate bytes = %d, want %d", stale.RetainedDuplicateBytes, len(content))
+	if stale.RetainedDuplicateBytes != int64(2*len(content)) {
+		t.Fatalf("stale retained duplicate bytes = %d, want %d", stale.RetainedDuplicateBytes, 2*len(content))
 	}
 	summary, err := st.VerifyAndDeduplicate(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Candidates != 1 || summary.Deduplicated != 1 {
-		t.Fatalf("deduplicate summary = %#v, want stale candidate reassessed", summary)
+	if summary.Candidates != 2 || summary.Deduplicated != 2 {
+		t.Fatalf("deduplicate summary = %#v, want stale candidates reassessed", summary)
 	}
 	current, err := st.Summary()
 	if err != nil {
@@ -337,6 +341,31 @@ func retainedDuplicatePath(t *testing.T, st *Store) string {
 		t.Fatal(err)
 	}
 	return filepath.Join(st.Root, filepath.FromSlash(key))
+}
+
+func retainedAcquiredPaths(t *testing.T, st *Store) []string {
+	t.Helper()
+	rows, err := st.DB.Query(`
+		select st.acquired_storage_key
+		from source_content_links scl
+		join stored_objects st on st.stored_object_id = scl.stored_object_id
+		order by scl.source_occurrence_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, filepath.Join(st.Root, filepath.FromSlash(key)))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return paths
 }
 
 func retainedDuplicateCanonicalPath(t *testing.T, st *Store) string {
