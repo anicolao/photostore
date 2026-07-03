@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 //go:embed static/*
@@ -30,17 +31,18 @@ type ServerOptions struct {
 }
 
 type Server struct {
-	store       *Store
-	apiOnly     bool
-	allowedHost string
-	buildDir    string
-	scanOptions ScanOptions
-	mux         *http.ServeMux
-	mu          sync.Mutex
-	jobsMu      sync.Mutex
-	jobs        map[string]*Job
-	subsMu      sync.Mutex
-	subs        map[chan ServerEvent]struct{}
+	store                    *Store
+	apiOnly                  bool
+	hostPolicy               hostPolicy
+	buildDir                 string
+	scanOptions              ScanOptions
+	mux                      *http.ServeMux
+	mu                       sync.Mutex
+	jobsMu                   sync.Mutex
+	jobs                     map[string]*Job
+	subsMu                   sync.Mutex
+	subs                     map[chan ServerEvent]struct{}
+	eventStreamDroppedEvents atomic.Uint64
 }
 
 type Job struct {
@@ -69,7 +71,7 @@ func NewServer(store *Store, opts ServerOptions) http.Handler {
 	s := &Server{
 		store:       store,
 		apiOnly:     opts.APIOnly,
-		allowedHost: normalizeHost(opts.ListenAddr),
+		hostPolicy:  newHostPolicy(opts.ListenAddr),
 		buildDir:    opts.BuildDir,
 		scanOptions: serverScanOptions(opts.ScanOptions),
 		mux:         http.NewServeMux(),
@@ -106,10 +108,72 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) hostAllowed(host string) bool {
-	if s.allowedHost == "" {
+	return s.hostPolicy.allowed(host)
+}
+
+type hostPolicy struct {
+	allowAnyHost bool
+	port         string
+	hosts        map[string]struct{}
+}
+
+func newHostPolicy(listenAddr string) hostPolicy {
+	listenAddr = strings.TrimSpace(listenAddr)
+	if listenAddr == "" {
+		return hostPolicy{allowAnyHost: true}
+	}
+	host, port := splitHostPort(listenAddr)
+	host = canonicalHostName(host)
+	if isUnspecifiedHost(host) {
+		return hostPolicy{allowAnyHost: true, port: port}
+	}
+	hosts := map[string]struct{}{host: {}}
+	if isLoopbackHost(host) {
+		hosts["localhost"] = struct{}{}
+		hosts["127.0.0.1"] = struct{}{}
+		hosts["::1"] = struct{}{}
+	}
+	return hostPolicy{port: port, hosts: hosts}
+}
+
+func (p hostPolicy) allowed(hostHeader string) bool {
+	host, port := splitHostPort(hostHeader)
+	if host == "" {
+		return false
+	}
+	if p.port != "" && port != p.port {
+		return false
+	}
+	if p.allowAnyHost {
 		return true
 	}
-	return normalizeHost(host) == s.allowedHost
+	_, ok := p.hosts[canonicalHostName(host)]
+	return ok
+}
+
+func canonicalHostName(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	host = strings.TrimPrefix(strings.TrimSuffix(host, "]"), "[")
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return host
+}
+
+func isUnspecifiedHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func normalizeHost(host string) string {
@@ -172,7 +236,10 @@ func (s *Server) routes() {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                          true,
+		"event_stream_dropped_events": s.eventStreamDroppedEvents.Load(),
+	})
 }
 
 func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
@@ -726,6 +793,10 @@ func (s *Server) broadcast(event ServerEvent) {
 		select {
 		case ch <- event:
 		default:
+			// The SSE stream is a progress notification channel, not the durable
+			// source of truth. Slow subscribers can miss updates and resync from
+			// /api/jobs; count drops so loss is visible in /api/health.
+			s.eventStreamDroppedEvents.Add(1)
 		}
 	}
 }
