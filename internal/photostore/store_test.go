@@ -287,6 +287,82 @@ func TestOpenDrainsAssetCreationRequiredProjection(t *testing.T) {
 	}
 }
 
+func TestOpenReplaysProjectionWhenReducerVersionChanges(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanID := "scan_projection_version"
+	occID := "occ_projection_version"
+	objID := "obj_projection_version"
+	ref := contentRef(sha([]byte("projection-version")), int64(len("projection-version")))
+	if err := st.appendEvent("SourceFileAcquired", nil, &scanID, map[string]any{
+		"scan_id":                 scanID,
+		"source_occurrence_id":    occID,
+		"stored_object_id":        objID,
+		"purpose":                 "source_media",
+		"source_kind":             "source_root",
+		"source_root_id":          "src_projection_version",
+		"path":                    filepath.Join(root, "IMG.JPG"),
+		"relative_path":           "IMG.JPG",
+		"historical_inventory_id": nil,
+		"inventory_entry_id":      nil,
+		"acquired_storage_key":    "objects/acquired/" + objID,
+		"source_file":             map[string]any{},
+		"copy_result": map[string]any{
+			"bytes_copied":   int64(len("projection-version")),
+			"hash_algorithm": "sha256",
+			"hash":           sha([]byte("projection-version")),
+		},
+		"storage_disposition": map[string]any{
+			"cas_existed_at_ingest":    false,
+			"acquired_object_retained": true,
+			"temporary_copy_discarded": false,
+		},
+		"content_ref": ref,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.appendEventReturnID("ContentAddressMaterialized", nil, nil, map[string]any{
+		"stored_object_id": objID,
+		"content_ref":      ref,
+		"materialization":  map[string]any{"method": "hard_link", "created": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`delete from asset_creation_required`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(`update projection_state set projection_version = ? where projection_name = ?`, mainProjectionVersion-1, "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if got := assetCreationRequiredCount(t, st); got != 0 {
+		t.Fatalf("asset_creation_required rows after version replay = %d, want 0", got)
+	}
+	var assetID string
+	if err := st.DB.QueryRow(`select asset_id from assets where content_ref = ?`, ref).Scan(&assetID); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := st.DB.QueryRow(`select projection_version from projection_state where projection_name = ?`, "main").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != mainProjectionVersion {
+		t.Fatalf("projection version = %d, want %d", version, mainProjectionVersion)
+	}
+}
+
 func TestConcurrentStoreHandlesSerializeEventLogCursor(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")

@@ -28,6 +28,7 @@ import (
 )
 
 const schemaVersion = 1
+const mainProjectionVersion = 2
 const progressCountPrefix = "\x1fphotostore-progress-count\x1f"
 
 var deterministicIDCounter atomic.Uint64
@@ -168,7 +169,12 @@ func Open(root string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := st.replayUnappliedEvents(); err != nil {
+	if err := st.withEventLogLock(func() error {
+		if err := st.ensureMainProjectionVersion(); err != nil {
+			return err
+		}
+		return st.replayUnappliedEventsLocked()
+	}); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -825,8 +831,9 @@ func (s *Store) ensureProjectionStateColumns() error {
 		return err
 	}
 	for name, typ := range map[string]string{
-		"log_path":    "text",
-		"next_offset": "integer",
+		"log_path":           "text",
+		"next_offset":        "integer",
+		"projection_version": "integer",
 	} {
 		if cols[name] {
 			continue
@@ -836,6 +843,72 @@ func (s *Store) ensureProjectionStateColumns() error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) ensureMainProjectionVersion() error {
+	var version sql.NullInt64
+	err := s.DB.QueryRow(`select projection_version from projection_state where projection_name = ?`, "main").Scan(&version)
+	if err == nil {
+		if version.Valid && version.Int64 == mainProjectionVersion {
+			return nil
+		}
+		return s.resetMainProjection()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var applied int
+	if err := s.DB.QueryRow(`select count(*) from events_applied`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied == 0 {
+		return nil
+	}
+	return s.resetMainProjection()
+}
+
+func (s *Store) resetMainProjection() error {
+	tables := []string{
+		"events_applied",
+		"projection_state",
+		"source_roots",
+		"stored_objects",
+		"source_content_links",
+		"verified_hashes",
+		"content_addresses",
+		"source_occurrences",
+		"source_root_scans",
+		"historical_inventories",
+		"historical_inventory_scans",
+		"historical_matches",
+		"historical_seen_links",
+		"asset_projection",
+		"asset_creation_required",
+		"assets",
+		"asset_versions",
+		"asset_quality",
+		"asset_status",
+		"asset_visibility",
+		"asset_labels",
+		"label_catalog",
+		"scans",
+		"content_metadata",
+		"content_metadata_failures",
+		"metadata_issues",
+		"photo_capture_times",
+		"duplicate_deduplications",
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range tables {
+		if _, err := tx.Exec(`delete from ` + table); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) tableColumns(table string) (map[string]bool, error) {
@@ -1168,7 +1241,7 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 }
 
 func advanceProjectionCursor(tx *sql.Tx, ev Event, nextOffset int64) error {
-	_, err := tx.Exec(`insert or replace into projection_state(projection_name,log_path,next_offset,event_id,recorded_at_ms) values(?,?,?,?,?)`, "main", "events/events.jsonl", nextOffset, ev.EventID, ev.RecordedAtMS)
+	_, err := tx.Exec(`insert or replace into projection_state(projection_name,log_path,next_offset,event_id,recorded_at_ms,projection_version) values(?,?,?,?,?,?)`, "main", "events/events.jsonl", nextOffset, ev.EventID, ev.RecordedAtMS, mainProjectionVersion)
 	return err
 }
 
