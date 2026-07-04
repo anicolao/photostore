@@ -19,6 +19,8 @@ type StoreSummary struct {
 	ScanCount                int    `json:"scan_count"`
 	ContentCount             int    `json:"content_count"`
 	RetainedDuplicateBytes   int64  `json:"retained_duplicate_bytes"`
+	ThumbnailGarbageBytes    int64  `json:"thumbnail_garbage_bytes"`
+	ThumbnailGarbageFiles    int    `json:"thumbnail_garbage_files"`
 	LastScanCompletedAtMS    *int64 `json:"last_scan_completed_at_ms"`
 }
 
@@ -185,6 +187,12 @@ func (s *Store) Summary() (StoreSummary, error) {
 	if completed.Valid {
 		summary.LastScanCompletedAtMS = &completed.Int64
 	}
+	thumbnailGarbage, err := s.ThumbnailGarbageSummary()
+	if err != nil {
+		return summary, err
+	}
+	summary.ThumbnailGarbageBytes = thumbnailGarbage.Bytes
+	summary.ThumbnailGarbageFiles = thumbnailGarbage.Files
 	return summary, nil
 }
 

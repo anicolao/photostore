@@ -306,6 +306,46 @@ func TestServerWildcardBindAllowsAnyHostOnBoundPort(t *testing.T) {
 	}
 }
 
+func TestServerCollectsThumbnailGarbage(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	stalePath := filepath.Join(storePath, "thumbnails", "jpeg", "240", "old-renderer", "aa", "bb", "stale.jpg")
+	mustMkdir(t, filepath.Dir(stalePath))
+	mustWrite(t, stalePath, []byte("stale thumbnail"))
+
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	var before StoreSummary
+	getJSON(t, ts.URL+"/api/store", &before)
+	if before.ThumbnailGarbageFiles != 1 || before.ThumbnailGarbageBytes != int64(len("stale thumbnail")) {
+		t.Fatalf("thumbnail garbage before = files %d bytes %d", before.ThumbnailGarbageFiles, before.ThumbnailGarbageBytes)
+	}
+
+	var started Job
+	postJSONInto(t, ts.URL+"/api/thumbnails/gc", map[string]string{}, http.StatusAccepted, &started)
+	done := waitJob(t, ts.URL, started.JobID)
+	if done.Status != "completed" {
+		t.Fatalf("thumbnail gc status = %s error = %v", done.Status, done.Error)
+	}
+	if !strings.Contains(strings.Join(done.Progress, "\n"), "thumbnail garbage bytes removed") {
+		t.Fatalf("thumbnail gc progress = %#v", done.Progress)
+	}
+
+	var after StoreSummary
+	getJSON(t, ts.URL+"/api/store", &after)
+	if after.ThumbnailGarbageFiles != 0 || after.ThumbnailGarbageBytes != 0 {
+		t.Fatalf("thumbnail garbage after = files %d bytes %d, want zero", after.ThumbnailGarbageFiles, after.ThumbnailGarbageBytes)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("stale thumbnail stat err = %v, want not exist", err)
+	}
+}
+
 func TestServerHealthReportsDroppedEventStreamEvents(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {

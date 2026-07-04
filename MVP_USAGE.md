@@ -167,7 +167,9 @@ Completed scans generate thumbnails for acquired JPEGs. The scan drilldown view
 uses those thumbnails when available and shows a placeholder for photos whose
 thumbnail has not been generated yet. Thumbnail directories are projection
 outputs; if thumbnail rendering changes, Photostore can use a new renderer
-namespace and leave older thumbnails as garbage.
+namespace and leave older thumbnails as garbage. The dashboard reports stale
+thumbnail renderer output as thumbnail garbage and provides an explicit
+`GC thumbnails` action to delete inactive renderer namespaces.
 
 For frontend development:
 
