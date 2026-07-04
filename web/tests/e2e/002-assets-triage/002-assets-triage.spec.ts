@@ -98,6 +98,20 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
         expect(overflow.x).toBeLessThanOrEqual(0);
         expect(overflow.y).toBeLessThanOrEqual(0);
       } },
+      { spec: 'Asset detail image is fully contained in the assessment stage', check: async () => {
+        const fit = await page.evaluate(() => {
+          const image = document.querySelector('[data-testid="asset-detail-image"]');
+          const stage = document.querySelector('[data-testid="asset-photo-stage"]');
+          if (!(image instanceof HTMLElement) || !(stage instanceof HTMLElement)) return null;
+          const imageBox = image.getBoundingClientRect();
+          const stageBox = stage.getBoundingClientRect();
+          return {
+            width: imageBox.width <= stageBox.width + 0.5,
+            height: imageBox.height <= stageBox.height + 0.5,
+          };
+        });
+        expect(fit).toEqual({ width: true, height: true });
+      } },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },
       { spec: 'Source provenance lists duplicate fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A_COPY.jpeg') },

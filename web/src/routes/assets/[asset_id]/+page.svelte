@@ -297,10 +297,14 @@
   }
 
   .photo-stage img {
-    width: 100%;
-    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
     object-fit: contain;
     display: block;
+    min-width: 0;
+    min-height: 0;
   }
 
   .side-panel {
