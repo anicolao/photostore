@@ -11,7 +11,12 @@ const fixtureJPEGWithEXIF = jpegWithEXIF(fixtureJPEG, [
   [0x0110, 'EOS 5D'],
   [0x9003, '2012:07:04 18:22:11'],
   [0x9011, '-04:00']
-]);
+], {
+  latitudeRef: 'N',
+  latitude: [[45, 1], [7, 1], [3367, 100]],
+  longitudeRef: 'W',
+  longitude: [[79, 1], [38, 1], [2323, 100]]
+});
 const fixturePosterJPEG = jpegWithoutEXIFDimensions(2400, 1600);
 const fixtureBadJPEG = Buffer.from('not really a jpeg');
 const expectedDuplicateBytes = fixtureJPEGWithEXIF.length;
@@ -186,7 +191,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'EXIF panel is visible', check: async () => await expect(page.getByTestId('exif-panel')).toBeVisible() },
       { spec: 'Camera summary is visible', check: async () => await expect(page.getByTestId('photo-camera')).toHaveText('Canon EOS 5D') },
       { spec: 'Capture date summary is visible', check: async () => await expect(page.getByTestId('photo-date')).toHaveText('2012-07-04 18:22:11') },
-      { spec: 'Location summary is visible', check: async () => await expect(page.getByTestId('photo-location')).toHaveText('No GPS location') },
+      { spec: 'Location summary is visible', check: async () => await expect(page.getByTestId('photo-location')).toHaveText('45.126019, -79.639786') },
       { spec: 'Raw EXIF debug section is available', check: async () => await expect(page.getByTestId('raw-exif')).toContainText('Raw EXIF') }
     ]
   });
@@ -266,8 +271,15 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   tester.generateDocs();
 });
 
-function jpegWithEXIF(base: Buffer, fields: Array<[number, string]>) {
-  const payload = exifPayload(fields);
+type GPSFixture = {
+  latitudeRef: 'N' | 'S';
+  latitude: Array<[number, number]>;
+  longitudeRef: 'E' | 'W';
+  longitude: Array<[number, number]>;
+};
+
+function jpegWithEXIF(base: Buffer, fields: Array<[number, string]>, gps?: GPSFixture) {
+  const payload = exifPayload(fields, gps);
   const segmentLength = payload.length + 2;
   const app1 = Buffer.from([0xff, 0xe1, segmentLength >> 8, segmentLength & 0xff]);
   return Buffer.concat([base.subarray(0, 2), app1, payload, base.subarray(2)]);
@@ -297,7 +309,7 @@ function jpegWithoutEXIFDimensions(width: number, height: number) {
   return Buffer.concat([Buffer.from([0xff, 0xd8]), sof, sos, Buffer.from([0x00, 0xff, 0xd9])]);
 }
 
-function exifPayload(fields: Array<[number, string]>) {
+function exifPayload(fields: Array<[number, string]>, gps?: GPSFixture) {
   const tiffParts: Buffer[] = [];
   const dataParts: Buffer[] = [];
   const writeUInt16 = (value: number) => {
@@ -314,31 +326,90 @@ function exifPayload(fields: Array<[number, string]>) {
   tiffParts.push(Buffer.from('II'));
   writeUInt16(42);
   writeUInt32(8);
-  writeUInt16(1);
+  writeUInt16(gps ? 2 : 1);
   writeUInt16(0x8769);
   writeUInt16(4);
   writeUInt32(1);
-  const exifIFDOffset = 8 + 2 + 12 + 4;
+  const ifd0Size = 2 + (gps ? 2 : 1) * 12 + 4;
+  const exifIFDOffset = 8 + ifd0Size;
+  const exifIFDSize = 2 + fields.length * 12 + 4;
+  const gpsFields = gps ? gpsIFDFields(gps) : [];
+  const gpsIFDOffset = exifIFDOffset + exifIFDSize;
+  const gpsIFDSize = gps ? 2 + gpsFields.length * 12 + 4 : 0;
+  const dataStart = gpsIFDOffset + gpsIFDSize;
   writeUInt32(exifIFDOffset);
+  if (gps) {
+    writeUInt16(0x8825);
+    writeUInt16(4);
+    writeUInt32(1);
+    writeUInt32(gpsIFDOffset);
+  }
   writeUInt32(0);
   writeUInt16(fields.length);
 
-  const dataStart = exifIFDOffset + 2 + fields.length * 12 + 4;
   for (const [tag, text] of fields) {
-    const value = Buffer.concat([Buffer.from(text), Buffer.from([0])]);
-    writeUInt16(tag);
-    writeUInt16(2);
-    writeUInt32(value.length);
-    if (value.length <= 4) {
-      const inline = Buffer.alloc(4);
-      value.copy(inline);
-      tiffParts.push(inline);
-    } else {
-      const dataLength = dataParts.reduce((sum, part) => sum + part.length, 0);
-      writeUInt32(dataStart + dataLength);
-      dataParts.push(value);
-    }
+    writeIFDEntry(tag, 2, Buffer.concat([Buffer.from(text), Buffer.from([0])]), dataStart, tiffParts, dataParts);
   }
   writeUInt32(0);
+
+  if (gps) {
+    writeUInt16(gpsFields.length);
+    for (const field of gpsFields) {
+      writeIFDEntry(field.tag, field.type, field.value, dataStart, tiffParts, dataParts);
+    }
+    writeUInt32(0);
+  }
   return Buffer.concat([Buffer.from('Exif\0\0'), ...tiffParts, ...dataParts]);
+}
+
+function gpsIFDFields(gps: GPSFixture) {
+  return [
+    { tag: 0x0001, type: 2, value: asciiValue(gps.latitudeRef) },
+    { tag: 0x0002, type: 5, value: rationalArray(gps.latitude) },
+    { tag: 0x0003, type: 2, value: asciiValue(gps.longitudeRef) },
+    { tag: 0x0004, type: 5, value: rationalArray(gps.longitude) }
+  ];
+}
+
+function writeIFDEntry(tag: number, type: number, value: Buffer, dataStart: number, tiffParts: Buffer[], dataParts: Buffer[]) {
+  const writeUInt16 = (target: Buffer[], next: number) => {
+    const out = Buffer.alloc(2);
+    out.writeUInt16LE(next);
+    target.push(out);
+  };
+  const writeUInt32 = (target: Buffer[], next: number) => {
+    const out = Buffer.alloc(4);
+    out.writeUInt32LE(next);
+    target.push(out);
+  };
+  writeUInt16(tiffParts, tag);
+  writeUInt16(tiffParts, type);
+  writeUInt32(tiffParts, exifValueCount(type, value));
+  if (value.length <= 4) {
+    const inline = Buffer.alloc(4);
+    value.copy(inline);
+    tiffParts.push(inline);
+  } else {
+    const dataLength = dataParts.reduce((sum, part) => sum + part.length, 0);
+    writeUInt32(tiffParts, dataStart + dataLength);
+    dataParts.push(value);
+  }
+}
+
+function exifValueCount(type: number, value: Buffer) {
+  if (type === 5) return value.length / 8;
+  return value.length;
+}
+
+function asciiValue(value: string) {
+  return Buffer.concat([Buffer.from(value), Buffer.from([0])]);
+}
+
+function rationalArray(values: Array<[number, number]>) {
+  const out = Buffer.alloc(values.length * 8);
+  values.forEach(([num, den], index) => {
+    out.writeUInt32LE(num, index * 8);
+    out.writeUInt32LE(den, index * 8 + 4);
+  });
+  return out;
 }
