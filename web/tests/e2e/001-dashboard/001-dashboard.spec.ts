@@ -197,8 +197,8 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
         const mapSrc = await page.getByTestId('photo-map').getAttribute('src');
         expect(mapSrc).toBeTruthy();
         const mapResponse = await page.request.get(mapSrc!);
-        expect(mapResponse.ok()).toBe(true);
-        expect(mapResponse.headers()['content-type']).toContain('image/svg+xml');
+        expect(mapResponse.ok(), await mapResponse.text()).toBe(true);
+        expect(mapResponse.headers()['content-type']).toContain('image/png');
       } },
       { spec: 'Raw EXIF debug section is available', check: async () => await expect(page.getByTestId('raw-exif')).toContainText('Raw EXIF') }
     ]

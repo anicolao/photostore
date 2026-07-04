@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"io"
 	"math"
 	"mime"
 	"net"
@@ -18,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type ServerOptions struct {
@@ -212,7 +217,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/thumbnail", s.handleStoredObjectThumbnail)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/metadata", s.handleStoredObjectMetadata)
-	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/map.svg", s.handleStoredObjectMap)
+	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/map.png", s.handleStoredObjectMap)
 	s.mux.HandleFunc("GET /api/photos/dates", s.handlePhotoYears)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}", s.handlePhotoMonths)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}", s.handlePhotoDays)
@@ -472,9 +477,14 @@ func (s *Server) handleStoredObjectMap(w http.ResponseWriter, r *http.Request) {
 		writeErrorStatus(w, http.StatusNotFound, errors.New("object has no GPS location"))
 		return
 	}
-	w.Header().Set("Content-Type", "image/svg+xml")
+	img, err := s.store.renderMapFragment(coords.Lat, coords.Lon)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	_, _ = w.Write([]byte(mapFragmentSVG(coords.Lat, coords.Lon)))
+	_ = png.Encode(w, img)
 }
 
 func (s *Server) handleInventories(w http.ResponseWriter, r *http.Request) {
@@ -1094,66 +1104,143 @@ func isFiniteFloat(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
-func mapFragmentSVG(lat float64, lon float64) string {
-	const width = 520
-	const height = 260
-	latSpan := 0.18
-	lonSpan := 0.28
-	latMin := lat - latSpan/2
-	latMax := lat + latSpan/2
-	lonMin := lon - lonSpan/2
-	lonMax := lon + lonSpan/2
-	label := fmt.Sprintf("%.6f, %.6f", lat, lon)
-	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" role="img" aria-label="Map fragment centered on %s">
-  <defs>
-    <linearGradient id="water" x1="0" x2="1" y1="0" y2="1">
-      <stop offset="0" stop-color="#d8eef7"/>
-      <stop offset="1" stop-color="#c6e2ed"/>
-    </linearGradient>
-    <pattern id="grid" width="52" height="52" patternUnits="userSpaceOnUse">
-      <path d="M 52 0 L 0 0 0 52" fill="none" stroke="#ffffff" stroke-width="1.5" opacity="0.8"/>
-    </pattern>
-  </defs>
-  <rect width="520" height="260" fill="url(#water)"/>
-  <path d="M -20 182 C 80 126 150 152 220 110 C 286 70 364 84 540 20 L 540 260 L -20 260 Z" fill="#d7ead1"/>
-  <path d="M -20 208 C 92 146 164 172 236 130 C 306 90 388 104 540 48" fill="none" stroke="#9ec095" stroke-width="16" opacity="0.58"/>
-  <rect width="520" height="260" fill="url(#grid)" opacity="0.64"/>
-  <g stroke="#7b8794" stroke-width="1" opacity="0.75">
-    <path d="M 130 0 V 260"/>
-    <path d="M 260 0 V 260"/>
-    <path d="M 390 0 V 260"/>
-    <path d="M 0 65 H 520"/>
-    <path d="M 0 130 H 520"/>
-    <path d="M 0 195 H 520"/>
-  </g>
-  <g font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#3c4043">
-    <text x="12" y="24">%s</text>
-    <text x="12" y="244">%s</text>
-    <text x="388" y="24">%s</text>
-    <text x="388" y="244">%s</text>
-  </g>
-  <g transform="translate(260 130)">
-    <circle r="21" fill="#ffffff" opacity="0.9"/>
-    <circle r="13" fill="#c5221f"/>
-    <circle r="5" fill="#ffffff"/>
-  </g>
-  <g font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif">
-    <rect x="138" y="204" width="244" height="34" rx="6" fill="#ffffff" opacity="0.94"/>
-    <text x="260" y="226" text-anchor="middle" font-size="14" font-weight="650" fill="#202124">%s</text>
-  </g>
-</svg>`, width, height, width, height, html.EscapeString(label), formatLatitude(latMax), formatLatitude(latMin), formatLongitude(lonMin), formatLongitude(lonMax), html.EscapeString(label))
+const (
+	mapTileSize        = 256
+	mapFragmentWidth   = 520
+	mapFragmentHeight  = 260
+	mapFragmentZoom    = 13
+	mapTileCacheMaxAge = 7 * 24 * time.Hour
+)
+
+var mapTileHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+func (s *Store) renderMapFragment(lat float64, lon float64) (image.Image, error) {
+	centerX, centerY := lonLatToGlobalPixel(lat, lon, mapFragmentZoom)
+	left := centerX - float64(mapFragmentWidth)/2
+	top := centerY - float64(mapFragmentHeight)/2
+	firstTileX := int(math.Floor(left / mapTileSize))
+	firstTileY := int(math.Floor(top / mapTileSize))
+	lastTileX := int(math.Floor((left + mapFragmentWidth - 1) / mapTileSize))
+	lastTileY := int(math.Floor((top + mapFragmentHeight - 1) / mapTileSize))
+
+	canvas := image.NewRGBA(image.Rect(0, 0, mapFragmentWidth, mapFragmentHeight))
+	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{R: 238, G: 241, B: 245, A: 255}), image.Point{}, draw.Src)
+	for tileY := firstTileY; tileY <= lastTileY; tileY++ {
+		for tileX := firstTileX; tileX <= lastTileX; tileX++ {
+			tile, err := s.openMapTile(mapFragmentZoom, tileX, tileY)
+			if err != nil {
+				return nil, err
+			}
+			dstX := int(math.Round(float64(tileX*mapTileSize) - left))
+			dstY := int(math.Round(float64(tileY*mapTileSize) - top))
+			draw.Draw(canvas, image.Rect(dstX, dstY, dstX+mapTileSize, dstY+mapTileSize), tile, image.Point{}, draw.Over)
+		}
+	}
+	drawMapMarker(canvas, mapFragmentWidth/2, mapFragmentHeight/2)
+	return canvas, nil
 }
 
-func formatLatitude(lat float64) string {
-	if lat < 0 {
-		return fmt.Sprintf("%.4f°S", math.Abs(lat))
-	}
-	return fmt.Sprintf("%.4f°N", lat)
+func lonLatToGlobalPixel(lat float64, lon float64, zoom int) (float64, float64) {
+	sinLat := math.Sin(lat * math.Pi / 180)
+	tileCount := 1 << uint(zoom)
+	scale := float64(mapTileSize * tileCount)
+	x := (lon + 180) / 360 * scale
+	y := (0.5 - math.Log((1+sinLat)/(1-sinLat))/(4*math.Pi)) * scale
+	return x, y
 }
 
-func formatLongitude(lon float64) string {
-	if lon < 0 {
-		return fmt.Sprintf("%.4f°W", math.Abs(lon))
+func (s *Store) openMapTile(z int, x int, y int) (image.Image, error) {
+	path := s.mapTileCachePath(z, x, y)
+	if info, err := os.Stat(path); err == nil && time.Since(info.ModTime()) < mapTileCacheMaxAge {
+		tile, err := decodeMapTile(path)
+		if err == nil {
+			return tile, nil
+		}
+		_ = os.Remove(path)
 	}
-	return fmt.Sprintf("%.4f°E", lon)
+	if err := s.downloadMapTile(z, x, y, path); err != nil {
+		return nil, err
+	}
+	return decodeMapTile(path)
+}
+
+func (s *Store) mapTileCachePath(z int, x int, y int) string {
+	return filepath.Join(s.Root, "map-tiles", "openstreetmap", fmt.Sprint(z), fmt.Sprint(x), fmt.Sprintf("%d.png", y))
+}
+
+func (s *Store) downloadMapTile(z int, x int, y int, path string) error {
+	tileURL := mapTileURL(z, x, y)
+	req, err := http.NewRequest(http.MethodGet, tileURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "photostore/0 (+https://github.com/anicolao/photostore)")
+	res, err := mapTileHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("map tile %s returned %s", tileURL, res.Status)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tile-*.png")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := io.Copy(tmp, res.Body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func mapTileURL(z int, x int, y int) string {
+	template := os.Getenv("PHOTOSTORE_MAP_TILE_URL_TEMPLATE")
+	if template == "" {
+		template = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+	}
+	out := strings.ReplaceAll(template, "{z}", fmt.Sprint(z))
+	out = strings.ReplaceAll(out, "{x}", fmt.Sprint(x))
+	out = strings.ReplaceAll(out, "{y}", fmt.Sprint(y))
+	return out
+}
+
+func decodeMapTile(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
+}
+
+func drawMapMarker(img *image.RGBA, cx int, cy int) {
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 235}
+	red := color.RGBA{R: 197, G: 34, B: 31, A: 255}
+	for y := -22; y <= 22; y++ {
+		for x := -22; x <= 22; x++ {
+			dist := math.Sqrt(float64(x*x + y*y))
+			if dist <= 22 {
+				img.Set(cx+x, cy+y, white)
+			}
+			if dist <= 14 {
+				img.Set(cx+x, cy+y, red)
+			}
+			if dist <= 5 {
+				img.Set(cx+x, cy+y, color.White)
+			}
+		}
+	}
 }
