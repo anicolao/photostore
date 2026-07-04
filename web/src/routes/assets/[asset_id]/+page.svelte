@@ -91,8 +91,9 @@
   function assetNavigationParams(params: URLSearchParams) {
     const out = new URLSearchParams();
     for (const key of ['quality', 'status', 'visibility', 'label', 'has_date', 'min_megapixels', 'sort']) {
-      const value = params.get(key);
-      if (value) out.set(key, value);
+      for (const value of params.getAll(key)) {
+        if (value) out.append(key, value);
+      }
     }
     return out;
   }

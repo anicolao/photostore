@@ -61,14 +61,20 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     ]
   });
 
-  await page.goto('/assets?status=Triage&has_date=1&min_megapixels=1&sort=date_asc');
+  await page.goto('/assets');
+  await page.getByTestId('status-filter-Triage').click();
+  await expect(page.getByTestId('status-filter-Triage')).toHaveClass(/active/);
+  await page.getByTestId('date-filter-known').click();
+  await expect(page.getByTestId('date-filter-known')).toHaveClass(/active/);
+  await page.getByTestId('megapixel-filter-large').click();
+  await expect(page.getByTestId('megapixel-filter-large')).toHaveClass(/active/);
   await tester.step('triage-queue-filtered', {
-    description: 'The triage queue can be filtered to dated photos above one megapixel and sorted by capture date.',
+    description: 'Filter buttons build a triage queue of dated photos above one megapixel sorted by capture date.',
     verifications: [
       { spec: 'Triage status filter is active', check: async () => await expect(page.getByTestId('status-filter-Triage')).toHaveClass(/active/) },
       { spec: 'Known date filter is active', check: async () => await expect(page.getByTestId('date-filter-known')).toHaveClass(/active/) },
       { spec: 'Large image filter is active', check: async () => await expect(page.getByTestId('megapixel-filter-large')).toHaveClass(/active/) },
-      { spec: 'Date ascending sort is active', check: async () => await expect(page.getByTestId('sort-filter-date_asc')).toHaveClass(/active/) },
+      { spec: 'Date ascending sort is active by default', check: async () => await expect(page.getByTestId('sort-filter-date_asc')).toHaveClass(/active/) },
       { spec: 'Large dated triage item A is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') },
       { spec: 'Large dated triage item B is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_B.JPG') },
       { spec: 'Small dated item is excluded', check: async () => await expect(page.getByTestId('asset-grid')).not.toContainText('TRIAGE_SMALL.JPG') },
@@ -99,6 +105,17 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     ]
   });
 
+  await page.getByTestId('asset-advance-to-next').uncheck();
+  await page.getByTestId('quality-Good').click();
+  await tester.step('asset-quality-no-advance', {
+    description: 'Turning off advance keeps the current asset visible while quality still marks it reviewed.',
+    verifications: [
+      { spec: 'The detail view remains on TRIAGE_B.JPG', check: async () => await expect(page.getByRole('heading', { name: 'TRIAGE_B.JPG' })).toBeVisible() },
+      { spec: 'Good quality is selected', check: async () => await expect(page.getByTestId('quality-Good')).toHaveClass(/active/) },
+      { spec: 'Reviewed status is selected by the quality reducer', check: async () => await expect(page.getByTestId('status-Reviewed')).toHaveClass(/active/) }
+    ]
+  });
+
   await page.goto('/assets?status=Reviewed');
   await page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' }).click();
   await page.getByTestId('visibility-Private').click();
@@ -120,18 +137,33 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     verifications: [
       { spec: 'Reviewed status filter is active', check: async () => await expect(page.getByTestId('status-filter-Reviewed')).toHaveClass(/active/) },
       { spec: 'Status-filtered grid contains the reviewed asset', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') },
-      { spec: 'Status-filtered pager shows one displayed asset', check: async () => await expect(page.getByTestId('asset-page-range')).toHaveText('Showing 1-1 of 1') }
+      { spec: 'Status-filtered grid also contains the second reviewed asset', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_B.JPG') },
+      { spec: 'Status-filtered pager shows two reviewed assets', check: async () => await expect(page.getByTestId('asset-page-range')).toHaveText('Showing 1-2 of 2') }
     ]
   });
 
-  await page.goto('/assets?quality=Best&status=Reviewed&visibility=Private&label=family');
+  await page.goto('/assets');
+  await page.getByTestId('quality-filter-Best').click();
+  await expect(page.getByTestId('quality-filter-Best')).toHaveClass(/active/);
+  await page.getByTestId('quality-filter-Good').click();
+  await expect(page.getByTestId('quality-filter-Good')).toHaveClass(/active/);
+  await page.getByTestId('status-filter-Reviewed').click();
+  await expect(page.getByTestId('status-filter-Reviewed')).toHaveClass(/active/);
+  await page.getByTestId('visibility-filter-Private').click();
+  await expect(page.getByTestId('visibility-filter-Private')).toHaveClass(/active/);
+  await page.getByTestId('label-filter-family').click();
+  await expect(page.getByTestId('label-filter-family')).toHaveClass(/active/);
   await tester.step('asset-filters', {
-    description: 'The asset grid filters by quality, status, visibility, and user-defined label.',
+    description: 'Filter buttons combine quality disjunction with status, visibility, and label conjunctions.',
     verifications: [
       { spec: 'Best filter is active', check: async () => await expect(page.getByTestId('quality-filter-Best')).toHaveClass(/active/) },
+      { spec: 'Good filter is active as a second quality choice', check: async () => await expect(page.getByTestId('quality-filter-Good')).toHaveClass(/active/) },
       { spec: 'Reviewed filter is active', check: async () => await expect(page.getByTestId('status-filter-Reviewed')).toHaveClass(/active/) },
       { spec: 'Private filter is active', check: async () => await expect(page.getByTestId('visibility-filter-Private')).toHaveClass(/active/) },
-      { spec: 'Filtered grid still contains the triaged asset', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') }
+      { spec: 'Family label filter is active', check: async () => await expect(page.getByTestId('label-filter-family')).toHaveClass(/active/) },
+      { spec: 'Filtered grid still contains the triaged asset', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') },
+      { spec: 'Filtered grid excludes the Good asset because it is not private or labelled', check: async () => await expect(page.getByTestId('asset-grid')).not.toContainText('TRIAGE_B.JPG') },
+      { spec: 'URL preserves both selected quality values', check: async () => expect(new URL(page.url()).searchParams.getAll('quality')).toEqual(['Best', 'Good']) }
     ]
   });
 

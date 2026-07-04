@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
   import { getAssets, getLabels } from '$lib/api';
   import type { Asset, LabelSummary } from '$lib/types';
@@ -8,7 +9,6 @@
   const statuses = ['Triage', 'Reviewed'];
   const visibilities = ['Normal', 'Private'];
   const sorts = [
-    { value: '', label: 'Filename' },
     { value: 'date_asc', label: 'Date ↑' },
     { value: 'date_desc', label: 'Date ↓' }
   ];
@@ -22,13 +22,13 @@
   let offset = 0;
   let nextOffset: number | undefined;
   let prevOffset: number | undefined;
-  let quality = '';
-  let status = '';
-  let visibility = '';
-  let label = '';
+  let quality: string[] = [];
+  let status: string[] = [];
+  let visibility: string[] = [];
+  let label: string[] = [];
   let hasDate = false;
   let minMegapixels = false;
-  let sort = '';
+  let sort = 'date_asc';
   let currentQuery = '\u0000';
   let loadToken = 0;
 
@@ -43,26 +43,26 @@
   });
 
   async function loadForURL(url: URL) {
-    quality = url.searchParams.get('quality') ?? '';
-    status = url.searchParams.get('status') ?? '';
-    visibility = url.searchParams.get('visibility') ?? '';
-    label = url.searchParams.get('label') ?? '';
+    quality = uniqueParams(url.searchParams.getAll('quality'));
+    status = uniqueParams(url.searchParams.getAll('status'));
+    visibility = uniqueParams(url.searchParams.getAll('visibility'));
+    label = uniqueParams(url.searchParams.getAll('label'));
     hasDate = url.searchParams.get('has_date') === '1';
     minMegapixels = url.searchParams.get('min_megapixels') === '1';
-    sort = url.searchParams.get('sort') ?? '';
+    sort = url.searchParams.get('sort') || 'date_asc';
     limit = boundedParam(url.searchParams.get('limit'), 60, 1, 200);
     offset = boundedParam(url.searchParams.get('offset'), 0, 0, 1_000_000_000);
     loading = true;
     error = '';
     const token = ++loadToken;
     const params = new URLSearchParams();
-    if (quality) params.set('quality', quality);
-    if (status) params.set('status', status);
-    if (visibility) params.set('visibility', visibility);
-    if (label) params.set('label', label);
+    appendParams(params, 'quality', quality);
+    appendParams(params, 'status', status);
+    appendParams(params, 'visibility', visibility);
+    appendParams(params, 'label', label);
     if (hasDate) params.set('has_date', '1');
     if (minMegapixels) params.set('min_megapixels', '1');
-    if (sort) params.set('sort', sort);
+    if (sort === 'date_desc') params.set('sort', sort);
     params.set('limit', String(limit));
     if (offset > 0) params.set('offset', String(offset));
     try {
@@ -92,7 +92,29 @@
     return value;
   }
 
-  function filteredHref(next: { quality?: string; status?: string; visibility?: string; label?: string; hasDate?: boolean; minMegapixels?: boolean; sort?: string }) {
+  function uniqueParams(values: string[]) {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of values) {
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }
+
+  function appendParams(params: URLSearchParams, key: string, values: string[]) {
+    for (const value of values) {
+      params.append(key, value);
+    }
+  }
+
+  function toggleValue(values: string[], value: string) {
+    return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
+  }
+
+  function filteredHref(next: { quality?: string[]; status?: string[]; visibility?: string[]; label?: string[]; hasDate?: boolean; minMegapixels?: boolean; sort?: string }) {
     const params = new URLSearchParams();
     const nextQuality = next.quality ?? quality;
     const nextStatus = next.status ?? status;
@@ -101,13 +123,13 @@
     const nextHasDate = next.hasDate ?? hasDate;
     const nextMinMegapixels = next.minMegapixels ?? minMegapixels;
     const nextSort = next.sort ?? sort;
-    if (nextQuality) params.set('quality', nextQuality);
-    if (nextStatus) params.set('status', nextStatus);
-    if (nextVisibility) params.set('visibility', nextVisibility);
-    if (nextLabel) params.set('label', nextLabel);
+    appendParams(params, 'quality', nextQuality);
+    appendParams(params, 'status', nextStatus);
+    appendParams(params, 'visibility', nextVisibility);
+    appendParams(params, 'label', nextLabel);
     if (nextHasDate) params.set('has_date', '1');
     if (nextMinMegapixels) params.set('min_megapixels', '1');
-    if (nextSort) params.set('sort', nextSort);
+    if (nextSort === 'date_desc') params.set('sort', nextSort);
     params.set('limit', String(limit));
     const query = params.toString();
     return query ? `/assets?${query}` : '/assets';
@@ -115,13 +137,13 @@
 
   function assetContextParams() {
     const params = new URLSearchParams();
-    if (quality) params.set('quality', quality);
-    if (status) params.set('status', status);
-    if (visibility) params.set('visibility', visibility);
-    if (label) params.set('label', label);
+    appendParams(params, 'quality', quality);
+    appendParams(params, 'status', status);
+    appendParams(params, 'visibility', visibility);
+    appendParams(params, 'label', label);
     if (hasDate) params.set('has_date', '1');
     if (minMegapixels) params.set('min_megapixels', '1');
-    if (sort) params.set('sort', sort);
+    if (sort === 'date_desc') params.set('sort', sort);
     return params;
   }
 
@@ -137,6 +159,10 @@
     const params = assetContextParams();
     const query = params.toString();
     return query ? `/assets/${assetID}?${query}` : `/assets/${assetID}`;
+  }
+
+  function navigate(href: string) {
+    void goto(href);
   }
 
   function formatCapture(asset: Asset) {
@@ -163,43 +189,46 @@
   <section class="filters" aria-label="Asset filters">
     <div>
       <span>Quality</span>
-      <a data-testid="quality-filter-all" class:active={!quality} href={filteredHref({ quality: '' })}>All</a>
+      <a data-testid="quality-filter-all" class:active={quality.length === 0} href={filteredHref({ quality: [] })} on:click|preventDefault={() => navigate(filteredHref({ quality: [] }))}>All</a>
       {#each qualities as value}
-        <a data-testid={`quality-filter-${value}`} class:active={quality === value} href={filteredHref({ quality: value })}>{value}</a>
+        <a data-testid={`quality-filter-${value}`} class:active={quality.includes(value)} href={filteredHref({ quality: toggleValue(quality, value) })} on:click|preventDefault={() => navigate(filteredHref({ quality: toggleValue(quality, value) }))}>{value}</a>
       {/each}
     </div>
     <div>
       <span>Status</span>
-      <a data-testid="status-filter-all" class:active={!status} href={filteredHref({ status: '' })}>All</a>
+      <a data-testid="status-filter-all" class:active={status.length === 0} href={filteredHref({ status: [] })} on:click|preventDefault={() => navigate(filteredHref({ status: [] }))}>All</a>
       {#each statuses as value}
-        <a data-testid={`status-filter-${value}`} class:active={status === value} href={filteredHref({ status: value })}>{value}</a>
+        <a data-testid={`status-filter-${value}`} class:active={status.includes(value)} href={filteredHref({ status: toggleValue(status, value) })} on:click|preventDefault={() => navigate(filteredHref({ status: toggleValue(status, value) }))}>{value}</a>
       {/each}
     </div>
     <div>
       <span>Visibility</span>
-      <a data-testid="visibility-filter-all" class:active={!visibility} href={filteredHref({ visibility: '' })}>All</a>
+      <a data-testid="visibility-filter-all" class:active={visibility.length === 0} href={filteredHref({ visibility: [] })} on:click|preventDefault={() => navigate(filteredHref({ visibility: [] }))}>All</a>
       {#each visibilities as value}
-        <a data-testid={`visibility-filter-${value}`} class:active={visibility === value} href={filteredHref({ visibility: value })}>{value}</a>
+        <a data-testid={`visibility-filter-${value}`} class:active={visibility.includes(value)} href={filteredHref({ visibility: toggleValue(visibility, value) })} on:click|preventDefault={() => navigate(filteredHref({ visibility: toggleValue(visibility, value) }))}>{value}</a>
       {/each}
     </div>
     <div>
       <span>Labels</span>
-      <a data-testid="label-filter-all" class:active={!label} href={filteredHref({ label: '' })}>All</a>
+      <a data-testid="label-filter-all" class:active={label.length === 0} href={filteredHref({ label: [] })} on:click|preventDefault={() => navigate(filteredHref({ label: [] }))}>All</a>
       {#each labels as item}
-        <a data-testid={`label-filter-${item.normalized_label}`} class:active={label === item.normalized_label} href={filteredHref({ label: item.normalized_label })}>{item.display_label}</a>
+        <a data-testid={`label-filter-${item.normalized_label}`} class:active={label.includes(item.normalized_label)} href={filteredHref({ label: toggleValue(label, item.normalized_label) })} on:click|preventDefault={() => navigate(filteredHref({ label: toggleValue(label, item.normalized_label) }))}>{item.display_label}</a>
       {/each}
     </div>
     <div>
-      <span>Metadata</span>
-      <a data-testid="date-filter-all" class:active={!hasDate} href={filteredHref({ hasDate: false })}>All dates</a>
-      <a data-testid="date-filter-known" class:active={hasDate} href={filteredHref({ hasDate: true })}>Has date</a>
-      <a data-testid="megapixel-filter-all" class:active={!minMegapixels} href={filteredHref({ minMegapixels: false })}>All sizes</a>
-      <a data-testid="megapixel-filter-large" class:active={minMegapixels} href={filteredHref({ minMegapixels: true })}>&gt; 1MP</a>
+      <span>Date</span>
+      <a data-testid="date-filter-all" class:active={!hasDate} href={filteredHref({ hasDate: false })} on:click|preventDefault={() => navigate(filteredHref({ hasDate: false }))}>All dates</a>
+      <a data-testid="date-filter-known" class:active={hasDate} href={filteredHref({ hasDate: true })} on:click|preventDefault={() => navigate(filteredHref({ hasDate: true }))}>Has date</a>
+    </div>
+    <div>
+      <span>Size</span>
+      <a data-testid="megapixel-filter-all" class:active={!minMegapixels} href={filteredHref({ minMegapixels: false })} on:click|preventDefault={() => navigate(filteredHref({ minMegapixels: false }))}>All sizes</a>
+      <a data-testid="megapixel-filter-large" class:active={minMegapixels} href={filteredHref({ minMegapixels: true })} on:click|preventDefault={() => navigate(filteredHref({ minMegapixels: true }))}>&gt; 1MP</a>
     </div>
     <div>
       <span>Sort</span>
       {#each sorts as item}
-        <a data-testid={`sort-filter-${item.value || 'filename'}`} class:active={sort === item.value} href={filteredHref({ sort: item.value })}>{item.label}</a>
+        <a data-testid={`sort-filter-${item.value}`} class:active={sort === item.value} href={filteredHref({ sort: item.value })} on:click|preventDefault={() => navigate(filteredHref({ sort: item.value }))}>{item.label}</a>
       {/each}
     </div>
   </section>

@@ -892,24 +892,28 @@ func assetQueryParts(query url.Values) assetQuery {
 		where = append(where, "a.asset_id = ?")
 		args = append(args, assetID)
 	}
-	if quality := query.Get("quality"); quality != "" {
-		where = append(where, "coalesce(aq.quality, 'Unrated') = ?")
-		args = append(args, quality)
+	if qualities := nonEmptyValues(query["quality"]); len(qualities) > 0 {
+		clause, clauseArgs := inStringClause("coalesce(aq.quality, 'Unrated')", qualities)
+		where = append(where, clause)
+		args = append(args, clauseArgs...)
 	}
-	if status := query.Get("status"); status != "" {
-		where = append(where, "coalesce(ast.status, 'Triage') = ?")
-		args = append(args, status)
+	if statuses := nonEmptyValues(query["status"]); len(statuses) > 0 {
+		clause, clauseArgs := inStringClause("coalesce(ast.status, 'Triage')", statuses)
+		where = append(where, clause)
+		args = append(args, clauseArgs...)
 	}
-	if visibility := query.Get("visibility"); visibility != "" {
-		where = append(where, "coalesce(av.visibility, 'Normal') = ?")
-		args = append(args, visibility)
+	if visibilities := nonEmptyValues(query["visibility"]); len(visibilities) > 0 {
+		clause, clauseArgs := inStringClause("coalesce(av.visibility, 'Normal')", visibilities)
+		where = append(where, clause)
+		args = append(args, clauseArgs...)
 	}
-	if label := query.Get("label"); label != "" {
+	if labels := normalizedQueryLabels(query["label"]); len(labels) > 0 {
+		clause, clauseArgs := inStringClause("filter_label.normalized_label", labels)
 		where = append(where, `exists (
 			select 1 from asset_labels filter_label
-			where filter_label.asset_id = a.asset_id and filter_label.normalized_label = ?
+			where filter_label.asset_id = a.asset_id and `+clause+`
 		)`)
-		args = append(args, normalizeAssetLabel(label))
+		args = append(args, clauseArgs...)
 	}
 	if truthyQuery(query.Get("has_date")) {
 		where = append(where, "pct.capture_date is not null and pct.capture_date != ''")
@@ -920,14 +924,11 @@ func assetQueryParts(query url.Values) assetQuery {
 		args = append(args, 1_000_000)
 	}
 	order := "coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id"
-	label := "Assets"
+	label := "Assets by date ascending"
 	switch query.Get("sort") {
 	case "date_desc":
 		order = "coalesce(pct.capture_time_local, '') desc, a.original_filename, a.asset_id"
 		label = "Assets by date descending"
-	case "date_asc":
-		order = "coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id"
-		label = "Assets by date ascending"
 	}
 	return assetQuery{
 		WithSQL: `with capture as (
@@ -940,6 +941,50 @@ func assetQueryParts(query url.Values) assetQuery {
 		Args:     args,
 		Label:    label,
 	}
+}
+
+func nonEmptyValues(values []string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizedQueryLabels(values []string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		normalized := normalizeAssetLabel(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func inStringClause(expr string, values []string) (string, []any) {
+	placeholders := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		args[i] = value
+	}
+	return fmt.Sprintf("%s in (%s)", expr, strings.Join(placeholders, ",")), args
 }
 
 func truthyQuery(value string) bool {

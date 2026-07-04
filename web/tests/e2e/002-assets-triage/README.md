@@ -26,15 +26,15 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 
 ---
 
-## The triage queue can be filtered to dated photos above one megapixel and sorted by capture date.
+## Filter buttons build a triage queue of dated photos above one megapixel sorted by capture date.
 
-![The triage queue can be filtered to dated photos above one megapixel and sorted by capture date.](./screenshots/002-triage-queue-filtered.png)
+![Filter buttons build a triage queue of dated photos above one megapixel sorted by capture date.](./screenshots/002-triage-queue-filtered.png)
 
 **Verifications:**
 - [x] Triage status filter is active
 - [x] Known date filter is active
 - [x] Large image filter is active
-- [x] Date ascending sort is active
+- [x] Date ascending sort is active by default
 - [x] Large dated triage item A is visible
 - [x] Large dated triage item B is visible
 - [x] Small dated item is excluded
@@ -67,9 +67,20 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 
 ---
 
+## Turning off advance keeps the current asset visible while quality still marks it reviewed.
+
+![Turning off advance keeps the current asset visible while quality still marks it reviewed.](./screenshots/005-asset-quality-no-advance.png)
+
+**Verifications:**
+- [x] The detail view remains on TRIAGE_B.JPG
+- [x] Good quality is selected
+- [x] Reviewed status is selected by the quality reducer
+
+---
+
 ## The asset detail view records quality, status, visibility, and a user-defined label.
 
-![The asset detail view records quality, status, visibility, and a user-defined label.](./screenshots/005-asset-triaged.png)
+![The asset detail view records quality, status, visibility, and a user-defined label.](./screenshots/006-asset-triaged.png)
 
 **Verifications:**
 - [x] Best quality is selected
@@ -81,30 +92,35 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 
 ## A direct status query URL filters the asset grid and preserves the active filter state.
 
-![A direct status query URL filters the asset grid and preserves the active filter state.](./screenshots/006-asset-status-query-filter.png)
+![A direct status query URL filters the asset grid and preserves the active filter state.](./screenshots/007-asset-status-query-filter.png)
 
 **Verifications:**
 - [x] Reviewed status filter is active
 - [x] Status-filtered grid contains the reviewed asset
-- [x] Status-filtered pager shows one displayed asset
+- [x] Status-filtered grid also contains the second reviewed asset
+- [x] Status-filtered pager shows two reviewed assets
 
 ---
 
-## The asset grid filters by quality, status, visibility, and user-defined label.
+## Filter buttons combine quality disjunction with status, visibility, and label conjunctions.
 
-![The asset grid filters by quality, status, visibility, and user-defined label.](./screenshots/007-asset-filters.png)
+![Filter buttons combine quality disjunction with status, visibility, and label conjunctions.](./screenshots/008-asset-filters.png)
 
 **Verifications:**
 - [x] Best filter is active
+- [x] Good filter is active as a second quality choice
 - [x] Reviewed filter is active
 - [x] Private filter is active
+- [x] Family label filter is active
 - [x] Filtered grid still contains the triaged asset
+- [x] Filtered grid excludes the Good asset because it is not private or labelled
+- [x] URL preserves both selected quality values
 
 ---
 
 ## A user-defined label can be removed from the asset.
 
-![A user-defined label can be removed from the asset.](./screenshots/008-asset-label-removed.png)
+![A user-defined label can be removed from the asset.](./screenshots/009-asset-label-removed.png)
 
 **Verifications:**
 - [x] Family label is no longer visible

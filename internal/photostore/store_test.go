@@ -159,6 +159,87 @@ func TestAssetQualityMarksTriageAssetReviewed(t *testing.T) {
 	}
 }
 
+func TestAssetsFiltersDisjoinWithinCategoryAndConjoinAcrossCategories(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), []byte("asset-a"))
+	mustWrite(t, filepath.Join(sourcePath, "B.JPG"), []byte("asset-b"))
+	mustWrite(t, filepath.Join(sourcePath, "C.JPG"), []byte("asset-c"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sourceID, err := st.AddSourceRoot(sourcePath, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSourceRootsWithOptions([]string{sourceID}, nil, ScanOptions{Workers: 2}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.Assets(url.Values{"limit": []string{"10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]string{}
+	for _, asset := range page.Assets {
+		byName[asset.Filename] = asset.AssetID
+	}
+	if err := st.SetAssetQuality(byName["A.JPG"], "Best"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAssetQuality(byName["B.JPG"], "Good"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAssetQuality(byName["C.JPG"], "Poor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAssetVisibility(byName["B.JPG"], "Private"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyAssetLabel(byName["A.JPG"], "Family"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyAssetLabel(byName["B.JPG"], "Travel"); err != nil {
+		t.Fatal(err)
+	}
+
+	filtered, err := st.Assets(url.Values{
+		"quality":    []string{"Best", "Good"},
+		"visibility": []string{"Normal"},
+		"limit":      []string{"10"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Total != 1 || len(filtered.Assets) != 1 || filtered.Assets[0].Filename != "A.JPG" {
+		t.Fatalf("quality disjunction plus visibility conjunction = %#v, want A.JPG only", filtered)
+	}
+	labelled, err := st.Assets(url.Values{
+		"label": []string{"family", "travel"},
+		"limit": []string{"10"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if labelled.Total != 2 {
+		t.Fatalf("label disjunction total = %d, want 2: %#v", labelled.Total, labelled.Assets)
+	}
+	allStatuses, err := st.Assets(url.Values{
+		"status": []string{"Triage", "Reviewed"},
+		"limit":  []string{"10"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allStatuses.Total != 3 {
+		t.Fatalf("status disjunction total = %d, want 3", allStatuses.Total)
+	}
+}
+
 func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
