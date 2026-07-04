@@ -86,7 +86,10 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
   await tester.step('asset-detail-provenance', {
     description: 'The asset detail view shows triage controls, navigation, and both source occurrences.',
     verifications: [
-      { spec: 'Asset detail thumbnail is visible', check: async () => await expect(page.getByTestId('asset-detail-thumbnail')).toBeVisible() },
+      { spec: 'Asset detail shows the full-resolution assessment image', check: async () => {
+        await expect(page.getByTestId('asset-detail-image')).toBeVisible();
+        await expect(page.getByTestId('asset-detail-image')).toHaveAttribute('src', /\/api\/objects\/.+\/bytes/);
+      } },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },
       { spec: 'Source provenance lists duplicate fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A_COPY.jpeg') },

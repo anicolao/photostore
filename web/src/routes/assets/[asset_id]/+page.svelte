@@ -124,96 +124,102 @@
   {:else if error}
     <section class="error" data-testid="asset-error">{error}</section>
   {:else if asset}
-    <section class="detail">
-      <div class="preview">
-        <img data-testid="asset-detail-thumbnail" src={asset.thumbnail_url} alt={asset.filename}>
-      </div>
-      <div class="facts">
-        <h2>Details</h2>
-        <dl>
-          <dt>Content</dt>
-          <dd data-testid="asset-content-ref">{asset.content_ref}</dd>
-          <dt>Capture time</dt>
-          <dd data-testid="asset-capture-time">{asset.capture_time_local || asset.capture_date || 'No capture time'}</dd>
-          <dt>Camera</dt>
-          <dd data-testid="asset-camera">{asset.camera || 'Unknown'}</dd>
-          <dt>Sources</dt>
-          <dd data-testid="asset-source-count">{asset.source_occurrence_count}</dd>
-        </dl>
-      </div>
-    </section>
+    <div class="assessment">
+      <figure class="photo-stage" data-testid="asset-photo-stage">
+        <img data-testid="asset-detail-image" src={asset.bytes_url} alt={asset.filename}>
+      </figure>
 
-    <section class="controls" aria-label="Triage controls">
-      <div class="advance">
-        <label>
-          <input data-testid="asset-advance-to-next" type="checkbox" bind:checked={advanceToNext}>
-          Advance to next
-        </label>
-        {#if navigation}
-          <span data-testid="asset-navigation-label">{navigation.label}</span>
-        {/if}
-      </div>
-      <div>
-        <h2>Quality</h2>
-        <div class="buttons">
-          {#each qualities as value}
-            <button data-testid={`quality-${value}`} class:active={asset.quality === value} disabled={saving} on:click={() => mutate(() => setAssetQuality(assetID, value), { advance: value !== 'Unrated' })}>{value}</button>
-          {/each}
-        </div>
-      </div>
-      <div>
-        <h2>Status</h2>
-        <div class="buttons">
-          {#each statuses as value}
-            <button data-testid={`status-${value}`} class:active={asset.status === value} disabled={saving} on:click={() => mutate(() => setAssetStatus(assetID, value))}>{value}</button>
-          {/each}
-        </div>
-      </div>
-      <div>
-        <h2>Visibility</h2>
-        <div class="buttons">
-          {#each visibilities as value}
-            <button data-testid={`visibility-${value}`} class:active={asset.visibility === value} disabled={saving} on:click={() => mutate(() => setAssetVisibility(assetID, value))}>{value}</button>
-          {/each}
-        </div>
-      </div>
-      <div>
-        <h2>Labels</h2>
-        <form data-testid="asset-label-form" on:submit|preventDefault={addLabel}>
-          <input data-testid="asset-label-input" bind:value={label} placeholder="Label" aria-label="Asset label">
-          <button data-testid="asset-label-add" disabled={saving || !label.trim()}>Add</button>
-        </form>
-        <div class="labels" data-testid="asset-detail-labels">
-          {#each asset.labels as item}
-            <span>
-              {item}
-              <button data-testid={`remove-label-${item.toLowerCase()}`} disabled={saving} on:click={() => mutate(() => removeAssetLabel(assetID, item))}>Remove</button>
-            </span>
-          {/each}
-        </div>
-      </div>
-    </section>
+      <aside class="side-panel" aria-label="Asset assessment">
+        <section class="facts">
+          <h2>Details</h2>
+          <dl>
+            <dt>Content</dt>
+            <dd data-testid="asset-content-ref">{asset.content_ref}</dd>
+            <dt>Capture time</dt>
+            <dd data-testid="asset-capture-time">{asset.capture_time_local || asset.capture_date || 'No capture time'}</dd>
+            <dt>Camera</dt>
+            <dd data-testid="asset-camera">{asset.camera || 'Unknown'}</dd>
+            <dt>Sources</dt>
+            <dd data-testid="asset-source-count">{asset.source_occurrence_count}</dd>
+          </dl>
+        </section>
 
-    <section>
-      <h2>Sources</h2>
-      <ul class="sources" data-testid="asset-sources">
-        {#each asset.sources as source}
-          <li>
-            <strong>{source.source_kind}</strong>
-            <span>{sourceName(source.path, source.relative_path)}</span>
-            <code>{source.scan_id}</code>
-          </li>
-        {/each}
-      </ul>
-    </section>
+        <section class="controls" aria-label="Triage controls">
+          <div class="advance">
+            <label>
+              <input data-testid="asset-advance-to-next" type="checkbox" bind:checked={advanceToNext}>
+              Advance to next
+            </label>
+            {#if navigation}
+              <span data-testid="asset-navigation-label">{navigation.label}</span>
+            {/if}
+          </div>
+          <div>
+            <h2>Quality</h2>
+            <div class="buttons">
+              {#each qualities as value}
+                <button data-testid={`quality-${value}`} class:active={asset.quality === value} disabled={saving} on:click={() => mutate(() => setAssetQuality(assetID, value), { advance: value !== 'Unrated' })}>{value}</button>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <h2>Status</h2>
+            <div class="buttons">
+              {#each statuses as value}
+                <button data-testid={`status-${value}`} class:active={asset.status === value} disabled={saving} on:click={() => mutate(() => setAssetStatus(assetID, value))}>{value}</button>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <h2>Visibility</h2>
+            <div class="buttons">
+              {#each visibilities as value}
+                <button data-testid={`visibility-${value}`} class:active={asset.visibility === value} disabled={saving} on:click={() => mutate(() => setAssetVisibility(assetID, value))}>{value}</button>
+              {/each}
+            </div>
+          </div>
+          <div>
+            <h2>Labels</h2>
+            <form data-testid="asset-label-form" on:submit|preventDefault={addLabel}>
+              <input data-testid="asset-label-input" bind:value={label} placeholder="Label" aria-label="Asset label">
+              <button data-testid="asset-label-add" disabled={saving || !label.trim()}>Add</button>
+            </form>
+            <div class="labels" data-testid="asset-detail-labels">
+              {#each asset.labels as item}
+                <span>
+                  {item}
+                  <button data-testid={`remove-label-${item.toLowerCase()}`} disabled={saving} on:click={() => mutate(() => removeAssetLabel(assetID, item))}>Remove</button>
+                </span>
+              {/each}
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2>Sources</h2>
+          <ul class="sources" data-testid="asset-sources">
+            {#each asset.sources as source}
+              <li>
+                <strong>{source.source_kind}</strong>
+                <span>{sourceName(source.path, source.relative_path)}</span>
+                <code>{source.scan_id}</code>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      </aside>
+    </div>
   {/if}
 </main>
 
 <style>
   main {
-    max-width: 1180px;
-    margin: 0 auto;
-    padding: 22px;
+    width: 100%;
+    min-height: 100vh;
+    padding: 14px;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    background: #f6f7f9;
   }
 
   header {
@@ -221,7 +227,7 @@
     justify-content: space-between;
     gap: 16px;
     align-items: flex-start;
-    margin-bottom: 18px;
+    margin-bottom: 12px;
   }
 
   .header-actions {
@@ -232,8 +238,8 @@
   }
 
   h1 {
-    margin: 8px 0 2px;
-    font-size: 26px;
+    margin: 6px 0 2px;
+    font-size: 22px;
   }
 
   h2 {
@@ -250,8 +256,7 @@
     border: 1px solid #d9dee7;
     border-radius: 8px;
     background: #ffffff;
-    padding: 16px;
-    margin-bottom: 16px;
+    padding: 12px;
   }
 
   .button-link {
@@ -268,27 +273,40 @@
     opacity: 0.45;
   }
 
-  .detail {
+  .assessment {
     display: grid;
-    grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
-    gap: 18px;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+    gap: 12px;
+    min-height: 0;
   }
 
-  .preview {
+  .photo-stage {
     display: grid;
     place-items: center;
+    margin: 0;
     border: 1px solid #d9dee7;
     border-radius: 8px;
-    background: #eef1f5;
-    min-height: 240px;
+    background: #111418;
+    min-width: 0;
+    min-height: calc(100vh - 108px);
+    max-height: calc(100vh - 108px);
     overflow: hidden;
   }
 
-  img {
+  .photo-stage img {
     width: 100%;
     height: 100%;
     object-fit: contain;
     display: block;
+  }
+
+  .side-panel {
+    min-height: 0;
+    max-height: calc(100vh - 108px);
+    overflow: auto;
+    display: grid;
+    align-content: start;
+    gap: 12px;
   }
 
   dl {
@@ -309,8 +327,8 @@
 
   .controls {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 14px;
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 
   .advance {
@@ -372,9 +390,8 @@
 
   .sources li {
     display: grid;
-    grid-template-columns: 180px minmax(0, 1fr) minmax(120px, auto);
+    grid-template-columns: 1fr;
     gap: 8px;
-    align-items: center;
   }
 
   .sources span {
@@ -390,13 +407,31 @@
   }
 
   @media (max-width: 860px) {
-    .detail,
-    .controls {
+    main {
+      padding: 10px;
+    }
+
+    header {
+      display: grid;
       grid-template-columns: 1fr;
     }
 
-    .sources li {
+    .header-actions {
+      justify-content: flex-start;
+    }
+
+    .assessment {
       grid-template-columns: 1fr;
+    }
+
+    .photo-stage {
+      min-height: 65vh;
+      max-height: 65vh;
+    }
+
+    .side-panel {
+      max-height: none;
+      overflow: visible;
     }
   }
 </style>

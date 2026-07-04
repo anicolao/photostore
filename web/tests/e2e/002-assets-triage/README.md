@@ -47,7 +47,7 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 ![The asset detail view shows triage controls, navigation, and both source occurrences.](./screenshots/003-asset-detail-provenance.png)
 
 **Verifications:**
-- [x] Asset detail thumbnail is visible
+- [x] Asset detail shows the full-resolution assessment image
 - [x] Asset source count is two
 - [x] Source provenance lists original fixture path
 - [x] Source provenance lists duplicate fixture path
