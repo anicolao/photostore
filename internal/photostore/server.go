@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -210,6 +212,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/thumbnail", s.handleStoredObjectThumbnail)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/metadata", s.handleStoredObjectMetadata)
+	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/map.svg", s.handleStoredObjectMap)
 	s.mux.HandleFunc("GET /api/photos/dates", s.handlePhotoYears)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}", s.handlePhotoMonths)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}", s.handlePhotoDays)
@@ -452,6 +455,26 @@ func (s *Server) handleStoredObjectMetadata(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, metadata)
+}
+
+func (s *Server) handleStoredObjectMap(w http.ResponseWriter, r *http.Request) {
+	metadata, err := s.store.ObjectMetadata(r.PathValue("stored_object_id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	coords, ok := gpsCoordinatesFromMetadata(metadata.Fields)
+	if !ok {
+		writeErrorStatus(w, http.StatusNotFound, errors.New("object has no GPS location"))
+		return
+	}
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	_, _ = w.Write([]byte(mapFragmentSVG(coords.Lat, coords.Lon)))
 }
 
 func (s *Server) handleInventories(w http.ResponseWriter, r *http.Request) {
@@ -995,4 +1018,142 @@ func contentTypeForPath(path string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+type gpsCoordinates struct {
+	Lat float64
+	Lon float64
+}
+
+func gpsCoordinatesFromMetadata(fields map[string]map[string]string) (gpsCoordinates, bool) {
+	lat, ok := gpsCoordinateFromMetadata(fields, "gps_latitude", "gps_latitude_ref")
+	if !ok {
+		return gpsCoordinates{}, false
+	}
+	lon, ok := gpsCoordinateFromMetadata(fields, "gps_longitude", "gps_longitude_ref")
+	if !ok {
+		return gpsCoordinates{}, false
+	}
+	if lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+		return gpsCoordinates{}, false
+	}
+	return gpsCoordinates{Lat: lat, Lon: lon}, true
+}
+
+func gpsCoordinateFromMetadata(fields map[string]map[string]string, valueKey string, refKey string) (float64, bool) {
+	raw := strings.TrimSpace(fields[valueKey]["raw"])
+	if raw == "" {
+		return 0, false
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) < 3 {
+		return 0, false
+	}
+	degrees, ok := rationalFloat(strings.TrimSpace(parts[0]))
+	if !ok {
+		return 0, false
+	}
+	minutes, ok := rationalFloat(strings.TrimSpace(parts[1]))
+	if !ok {
+		return 0, false
+	}
+	seconds, ok := rationalFloat(strings.TrimSpace(parts[2]))
+	if !ok {
+		return 0, false
+	}
+	value := degrees + minutes/60 + seconds/3600
+	switch strings.ToUpper(strings.TrimSpace(fields[refKey]["raw"])) {
+	case "S", "W":
+		value *= -1
+	case "N", "E", "":
+	default:
+		return 0, false
+	}
+	return value, true
+}
+
+func rationalFloat(raw string) (float64, bool) {
+	parts := strings.Split(raw, "/")
+	if len(parts) != 2 {
+		value, err := strconv.ParseFloat(raw, 64)
+		return value, err == nil && isFiniteFloat(value)
+	}
+	num, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return 0, false
+	}
+	den, err := strconv.ParseFloat(parts[1], 64)
+	if err != nil || den == 0 {
+		return 0, false
+	}
+	value := num / den
+	return value, isFiniteFloat(value)
+}
+
+func isFiniteFloat(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func mapFragmentSVG(lat float64, lon float64) string {
+	const width = 520
+	const height = 260
+	latSpan := 0.18
+	lonSpan := 0.28
+	latMin := lat - latSpan/2
+	latMax := lat + latSpan/2
+	lonMin := lon - lonSpan/2
+	lonMax := lon + lonSpan/2
+	label := fmt.Sprintf("%.6f, %.6f", lat, lon)
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d" role="img" aria-label="Map fragment centered on %s">
+  <defs>
+    <linearGradient id="water" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#d8eef7"/>
+      <stop offset="1" stop-color="#c6e2ed"/>
+    </linearGradient>
+    <pattern id="grid" width="52" height="52" patternUnits="userSpaceOnUse">
+      <path d="M 52 0 L 0 0 0 52" fill="none" stroke="#ffffff" stroke-width="1.5" opacity="0.8"/>
+    </pattern>
+  </defs>
+  <rect width="520" height="260" fill="url(#water)"/>
+  <path d="M -20 182 C 80 126 150 152 220 110 C 286 70 364 84 540 20 L 540 260 L -20 260 Z" fill="#d7ead1"/>
+  <path d="M -20 208 C 92 146 164 172 236 130 C 306 90 388 104 540 48" fill="none" stroke="#9ec095" stroke-width="16" opacity="0.58"/>
+  <rect width="520" height="260" fill="url(#grid)" opacity="0.64"/>
+  <g stroke="#7b8794" stroke-width="1" opacity="0.75">
+    <path d="M 130 0 V 260"/>
+    <path d="M 260 0 V 260"/>
+    <path d="M 390 0 V 260"/>
+    <path d="M 0 65 H 520"/>
+    <path d="M 0 130 H 520"/>
+    <path d="M 0 195 H 520"/>
+  </g>
+  <g font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="12" fill="#3c4043">
+    <text x="12" y="24">%s</text>
+    <text x="12" y="244">%s</text>
+    <text x="388" y="24">%s</text>
+    <text x="388" y="244">%s</text>
+  </g>
+  <g transform="translate(260 130)">
+    <circle r="21" fill="#ffffff" opacity="0.9"/>
+    <circle r="13" fill="#c5221f"/>
+    <circle r="5" fill="#ffffff"/>
+  </g>
+  <g font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif">
+    <rect x="138" y="204" width="244" height="34" rx="6" fill="#ffffff" opacity="0.94"/>
+    <text x="260" y="226" text-anchor="middle" font-size="14" font-weight="650" fill="#202124">%s</text>
+  </g>
+</svg>`, width, height, width, height, html.EscapeString(label), formatLatitude(latMax), formatLatitude(latMin), formatLongitude(lonMin), formatLongitude(lonMax), html.EscapeString(label))
+}
+
+func formatLatitude(lat float64) string {
+	if lat < 0 {
+		return fmt.Sprintf("%.4f°S", math.Abs(lat))
+	}
+	return fmt.Sprintf("%.4f°N", lat)
+}
+
+func formatLongitude(lon float64) string {
+	if lon < 0 {
+		return fmt.Sprintf("%.4f°W", math.Abs(lon))
+	}
+	return fmt.Sprintf("%.4f°E", lon)
 }

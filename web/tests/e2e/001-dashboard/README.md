@@ -123,6 +123,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 - [x] Camera summary is visible
 - [x] Capture date summary is visible
 - [x] Location summary is visible
+- [x] Local map fragment is visible
 - [x] Raw EXIF debug section is available
 
 ---

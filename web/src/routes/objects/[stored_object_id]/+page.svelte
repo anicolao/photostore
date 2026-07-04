@@ -10,10 +10,12 @@
   let infoOpen = false;
 
   $: bytesURL = storedObjectID ? `/api/objects/${storedObjectID}/bytes` : '';
+  $: mapURL = storedObjectID ? `/api/objects/${storedObjectID}/map.svg` : '';
   $: fields = metadata ? Object.entries(metadata.fields).toSorted(([a], [b]) => a.localeCompare(b)) : [];
   $: camera = metadata ? cameraLabel(metadata.fields) : '';
   $: takenAt = metadata ? captureDateLabel(metadata.fields) : '';
   $: location = metadata ? locationLabel(metadata.fields) : '';
+  $: coordinates = metadata ? gpsCoordinates(metadata.fields) : null;
 
   onMount(async () => {
     storedObjectID = $page.params.stored_object_id ?? '';
@@ -51,12 +53,24 @@
   }
 
   function locationLabel(fields: ObjectMetadata['fields']) {
+    const coords = gpsCoordinates(fields);
+    if (!coords) {
+      return 'No GPS location';
+    }
+    return `${coords.lat.toFixed(6)}, ${coords.lon.toFixed(6)}`;
+  }
+
+  function googleMapsURL(coords: { lat: number; lon: number }) {
+    return `https://www.google.com/maps/search/?api=1&query=${coords.lat.toFixed(6)},${coords.lon.toFixed(6)}`;
+  }
+
+  function gpsCoordinates(fields: ObjectMetadata['fields']) {
     const lat = gpsCoordinate(fields, 'gps_latitude', 'gps_latitude_ref');
     const lon = gpsCoordinate(fields, 'gps_longitude', 'gps_longitude_ref');
     if (lat === null || lon === null) {
-      return 'No GPS location';
+      return null;
     }
-    return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+    return { lat, lon };
   }
 
   function gpsCoordinate(fields: ObjectMetadata['fields'], valueKey: string, refKey: string) {
@@ -76,6 +90,7 @@
     if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) return null;
     return num / den;
   }
+
 </script>
 
 <svelte:head>
@@ -119,9 +134,22 @@
           </div>
           <div>
             <span>Location</span>
-            <strong data-testid="photo-location">{location}</strong>
+            <strong data-testid="photo-location">
+              {#if coordinates}
+                <a href={googleMapsURL(coordinates)} target="_blank" rel="noreferrer">{location}</a>
+              {:else}
+                {location}
+              {/if}
+            </strong>
           </div>
         </section>
+        {#if coordinates}
+          <section class="map-panel" aria-label="Photo location map">
+            <a href={googleMapsURL(coordinates)} target="_blank" rel="noreferrer">
+              <img class="map" data-testid="photo-map" src={mapURL} alt="Map fragment for {location}">
+            </a>
+          </section>
+        {/if}
         <details class="debug-exif" data-testid="raw-exif">
           <summary>Raw EXIF</summary>
           <p class="extractor">{metadata.extractor_name} v{metadata.extractor_version}</p>
@@ -262,6 +290,28 @@
     font-size: 16px;
     font-weight: 650;
     overflow-wrap: anywhere;
+  }
+
+  .summary-panel a {
+    color: #185abc;
+  }
+
+  .map-panel {
+    border: 1px solid #d9dee7;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 0 0 16px;
+  }
+
+  .map-panel a {
+    display: block;
+  }
+
+  .map {
+    display: block;
+    height: 220px;
+    width: 100%;
+    object-fit: cover;
   }
 
   .debug-exif {

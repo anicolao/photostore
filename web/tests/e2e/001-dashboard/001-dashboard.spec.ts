@@ -192,6 +192,14 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Camera summary is visible', check: async () => await expect(page.getByTestId('photo-camera')).toHaveText('Canon EOS 5D') },
       { spec: 'Capture date summary is visible', check: async () => await expect(page.getByTestId('photo-date')).toHaveText('2012-07-04 18:22:11') },
       { spec: 'Location summary is visible', check: async () => await expect(page.getByTestId('photo-location')).toHaveText('45.126019, -79.639786') },
+      { spec: 'Local map fragment is visible', check: async () => {
+        await expect(page.getByTestId('photo-map')).toBeVisible();
+        const mapSrc = await page.getByTestId('photo-map').getAttribute('src');
+        expect(mapSrc).toBeTruthy();
+        const mapResponse = await page.request.get(mapSrc!);
+        expect(mapResponse.ok()).toBe(true);
+        expect(mapResponse.headers()['content-type']).toContain('image/svg+xml');
+      } },
       { spec: 'Raw EXIF debug section is available', check: async () => await expect(page.getByTestId('raw-exif')).toContainText('Raw EXIF') }
     ]
   });
