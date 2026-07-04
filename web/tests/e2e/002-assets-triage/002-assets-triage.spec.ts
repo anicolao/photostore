@@ -112,6 +112,13 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
         });
         expect(fit).toEqual({ width: true, height: true });
       } },
+      { spec: 'Nearby asset thumbnail strip highlights the current asset', check: async () => {
+        await expect(page.getByTestId('asset-context-strip')).toBeVisible();
+        await expect(page.getByTestId('asset-strip-current')).toBeVisible();
+        await expect(page.getByTestId('asset-strip-link')).toHaveCount(1);
+        await expect(page.getByTestId('asset-strip-link')).toHaveAttribute('href', /\/assets\/asset_.+has_date=1.+min_megapixels=1/);
+        await expect(page.getByTestId('asset-context-strip').locator('img')).toHaveCount(2);
+      } },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },
       { spec: 'Source provenance lists duplicate fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A_COPY.jpeg') },

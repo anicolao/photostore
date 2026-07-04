@@ -50,6 +50,7 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 - [x] Asset detail shows the full-resolution assessment image
 - [x] Asset detail fits within the viewport without page overflow
 - [x] Asset detail image is fully contained in the assessment stage
+- [x] Nearby asset thumbnail strip highlights the current asset
 - [x] Asset source count is two
 - [x] Source provenance lists original fixture path
 - [x] Source provenance lists duplicate fixture path

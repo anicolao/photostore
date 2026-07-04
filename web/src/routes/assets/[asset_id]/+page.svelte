@@ -105,17 +105,34 @@
 
 <main>
   <header>
-    <div>
-      <a href="/assets">Assets</a>
-      <h1>{asset?.filename ?? 'Asset'}</h1>
-      <p><code>{assetID}</code></p>
-    </div>
-    {#if asset}
-      <div class="header-actions">
-        <a class="button-link" data-testid="asset-open-image" href={asset.view_url}>Open image</a>
-        <a class="button-link" data-testid="asset-prev" class:disabled={!navigation?.previous} aria-disabled={!navigation?.previous} href={navigation?.previous?.view_url ?? $page.url.pathname}>Previous</a>
-        <a class="button-link" data-testid="asset-next" class:disabled={!navigation?.next} aria-disabled={!navigation?.next} href={navigation?.next?.view_url ?? $page.url.pathname}>Next</a>
+    <div class="header-main">
+      <div>
+        <a href="/assets">Assets</a>
+        <h1>{asset?.filename ?? 'Asset'}</h1>
+        <p><code>{assetID}</code></p>
       </div>
+      {#if asset}
+        <div class="header-actions">
+          <a class="button-link" data-testid="asset-open-image" href={asset.view_url}>Open image</a>
+          <a class="button-link" data-testid="asset-prev" class:disabled={!navigation?.previous} aria-disabled={!navigation?.previous} href={navigation?.previous?.view_url ?? $page.url.pathname}>Previous</a>
+          <a class="button-link" data-testid="asset-next" class:disabled={!navigation?.next} aria-disabled={!navigation?.next} href={navigation?.next?.view_url ?? $page.url.pathname}>Next</a>
+        </div>
+      {/if}
+    </div>
+    {#if navigation?.window?.length}
+      <nav class="context-strip" aria-label="Nearby assets" data-testid="asset-context-strip">
+        {#each navigation.window as item}
+          <a
+            class:current={item.asset_id === assetID}
+            data-testid={item.asset_id === assetID ? 'asset-strip-current' : 'asset-strip-link'}
+            href={item.view_url}
+            title={item.filename}
+            aria-current={item.asset_id === assetID ? 'true' : undefined}
+          >
+            <img src={item.thumbnail_url} alt={item.filename}>
+          </a>
+        {/each}
+      </nav>
     {/if}
   </header>
 
@@ -225,11 +242,17 @@
   }
 
   header {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .header-main {
     display: flex;
     justify-content: space-between;
     gap: 16px;
     align-items: flex-start;
-    margin-bottom: 12px;
+    min-width: 0;
   }
 
   .header-actions {
@@ -252,6 +275,40 @@
   p {
     margin-top: 0;
     color: #5f6368;
+  }
+
+  .context-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, 64px);
+    justify-content: center;
+    gap: 8px;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .context-strip a {
+    box-sizing: border-box;
+    width: 64px;
+    height: 48px;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    background: #111418;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+  }
+
+  .context-strip a.current {
+    border-color: #1a73e8;
+    box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1a73e8;
+  }
+
+  .context-strip img {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    display: block;
   }
 
   section {
@@ -422,11 +479,21 @@
 
     header {
       display: grid;
+    }
+
+    .header-main {
+      display: grid;
       grid-template-columns: 1fr;
     }
 
     .header-actions {
       justify-content: flex-start;
+    }
+
+    .context-strip {
+      justify-content: start;
+      overflow-x: auto;
+      padding: 4px;
     }
 
     .assessment {

@@ -296,6 +296,12 @@ func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
 	if nav.Current.Filename != "OLD_LARGE.JPG" || nav.Next == nil || nav.Next.Filename != "NEW_SMALL.JPG" || nav.Previous != nil {
 		t.Fatalf("navigation = %#v, want OLD_LARGE then NEW_SMALL", nav)
 	}
+	if len(nav.Window) != 2 || nav.Window[0].Filename != "OLD_LARGE.JPG" || nav.Window[1].Filename != "NEW_SMALL.JPG" {
+		t.Fatalf("navigation window = %#v, want OLD_LARGE then NEW_SMALL", nav.Window)
+	}
+	if nav.Current.ThumbnailURL == "" || nav.Window[0].ThumbnailURL == "" || nav.Window[1].ThumbnailURL == "" {
+		t.Fatalf("navigation thumbnails missing: %#v", nav)
+	}
 }
 
 func TestInitExistingStoreDoesNotAppendDuplicateInitializedEvent(t *testing.T) {

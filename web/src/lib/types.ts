@@ -125,6 +125,7 @@ export type AssetNavigationItem = {
   asset_id: string;
   filename: string;
   view_url: string;
+  thumbnail_url: string;
 };
 
 export type AssetNavigation = {
@@ -133,6 +134,7 @@ export type AssetNavigation = {
   current: AssetNavigationItem;
   previous: AssetNavigationItem | null;
   next: AssetNavigationItem | null;
+  window: AssetNavigationItem[];
 };
 
 export type AssetDetail = Asset & {

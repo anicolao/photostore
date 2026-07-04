@@ -225,17 +225,19 @@ type AssetSourceProjection struct {
 }
 
 type AssetNavigationProjection struct {
-	List     string               `json:"list"`
-	Label    string               `json:"label"`
-	Current  AssetNavigationItem  `json:"current"`
-	Previous *AssetNavigationItem `json:"previous"`
-	Next     *AssetNavigationItem `json:"next"`
+	List     string                `json:"list"`
+	Label    string                `json:"label"`
+	Current  AssetNavigationItem   `json:"current"`
+	Previous *AssetNavigationItem  `json:"previous"`
+	Next     *AssetNavigationItem  `json:"next"`
+	Window   []AssetNavigationItem `json:"window"`
 }
 
 type AssetNavigationItem struct {
-	AssetID  string `json:"asset_id"`
-	Filename string `json:"filename"`
-	ViewURL  string `json:"view_url"`
+	AssetID      string `json:"asset_id"`
+	Filename     string `json:"filename"`
+	ViewURL      string `json:"view_url"`
+	ThumbnailURL string `json:"thumbnail_url"`
 }
 
 type LabelProjection struct {
@@ -1024,7 +1026,7 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 	parts := assetQueryParts(nextQuery)
 	rows, err := s.DB.Query(fmt.Sprintf(`
 		%s
-		select a.asset_id, coalesce(a.original_filename, '')
+		select a.asset_id, coalesce(a.original_filename, ''), a.representative_stored_object_id
 		%s
 		where %s
 		order by %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), parts.Args...)
@@ -1035,9 +1037,11 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 	items := []AssetNavigationItem{}
 	for rows.Next() {
 		var item AssetNavigationItem
-		if err := rows.Scan(&item.AssetID, &item.Filename); err != nil {
+		var representativeObjectID string
+		if err := rows.Scan(&item.AssetID, &item.Filename, &representativeObjectID); err != nil {
 			return AssetNavigationProjection{}, err
 		}
+		item.ThumbnailURL = "/api/objects/" + representativeObjectID + "/thumbnail"
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -1062,6 +1066,19 @@ func assetNavigationFromItems(assetID, label string, query url.Values, items []A
 		Label:   label,
 		Current: items[currentIndex],
 	}
+	windowStart := currentIndex - 3
+	if windowStart < 0 {
+		windowStart = 0
+	}
+	windowEnd := windowStart + 7
+	if windowEnd > len(items) {
+		windowEnd = len(items)
+		windowStart = windowEnd - 7
+		if windowStart < 0 {
+			windowStart = 0
+		}
+	}
+	out.Window = append(out.Window, items[windowStart:windowEnd]...)
 	if currentIndex > 0 {
 		prev := items[currentIndex-1]
 		out.Previous = &prev
