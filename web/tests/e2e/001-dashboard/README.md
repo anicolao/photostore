@@ -10,6 +10,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 - [x] Photostore heading is visible
 - [x] UI build hash is visible
 - [x] Source count is zero
+- [x] Thumbnail garbage starts at zero
 - [x] Recent scans empty state is visible
 
 ---
@@ -75,9 +76,21 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ---
 
+## The dashboard reports stale thumbnail renderer output and removes it through explicit garbage collection.
+
+![The dashboard reports stale thumbnail renderer output and removes it through explicit garbage collection.](./screenshots/006-thumbnail-garbage-collected.png)
+
+**Verifications:**
+- [x] Thumbnail garbage collection job completed
+- [x] Thumbnail garbage progress reports removed bytes
+- [x] Thumbnail garbage byte counter drops to zero
+- [x] Thumbnail garbage button disables after collection
+
+---
+
 ## Opening the job log reveals the scrollable acquisition log.
 
-![Opening the job log reveals the scrollable acquisition log.](./screenshots/006-job-log-opened.png)
+![Opening the job log reveals the scrollable acquisition log.](./screenshots/007-job-log-opened.png)
 
 **Verifications:**
 - [x] Job log contains acquisition messages
@@ -87,7 +100,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The acquired count opens a thumbnail grid with image links.
 
-![The acquired count opens a thumbnail grid with image links.](./screenshots/007-acquired-files-drilldown.png)
+![The acquired count opens a thumbnail grid with image links.](./screenshots/008-acquired-files-drilldown.png)
 
 **Verifications:**
 - [x] Photos heading is visible
@@ -101,7 +114,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The image view shows the original image and a readable information side panel.
 
-![The image view shows the original image and a readable information side panel.](./screenshots/008-image-exif-side-panel.png)
+![The image view shows the original image and a readable information side panel.](./screenshots/009-image-exif-side-panel.png)
 
 **Verifications:**
 - [x] Image view renders the photo
@@ -116,7 +129,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The date browser lists years derived from raw EXIF metadata.
 
-![The date browser lists years derived from raw EXIF metadata.](./screenshots/009-photos-by-date-years.png)
+![The date browser lists years derived from raw EXIF metadata.](./screenshots/010-photos-by-date-years.png)
 
 **Verifications:**
 - [x] Photos by date heading is visible
@@ -127,7 +140,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a year lists capture months.
 
-![Selecting a year lists capture months.](./screenshots/010-photos-by-date-months.png)
+![Selecting a year lists capture months.](./screenshots/011-photos-by-date-months.png)
 
 **Verifications:**
 - [x] Selected year heading is visible
@@ -137,7 +150,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a month lists capture days.
 
-![Selecting a month lists capture days.](./screenshots/011-photos-by-date-days.png)
+![Selecting a month lists capture days.](./screenshots/012-photos-by-date-days.png)
 
 **Verifications:**
 - [x] Selected month heading is visible
@@ -147,7 +160,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a capture day opens a thumbnail grid for that date.
 
-![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/012-photos-by-date-thumbnails.png)
+![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/013-photos-by-date-thumbnails.png)
 
 **Verifications:**
 - [x] Selected capture day heading is visible
@@ -159,7 +172,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The metadata review page shows extraction results and photos where no metadata was found.
 
-![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/013-metadata-review.png)
+![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/014-metadata-review.png)
 
 **Verifications:**
 - [x] Metadata heading is visible
@@ -178,7 +191,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The dashboard can trigger a metadata refresh for photos without recorded metadata results.
 
-![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/014-metadata-refresh-triggered.png)
+![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/015-metadata-refresh-triggered.png)
 
 **Verifications:**
 - [x] Metadata refresh job completed

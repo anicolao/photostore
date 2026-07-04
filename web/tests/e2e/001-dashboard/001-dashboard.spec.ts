@@ -28,6 +28,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Photostore heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Photostore' })).toBeVisible() },
       { spec: 'UI build hash is visible', check: async () => await expect(page.getByTestId('ui-build-hash')).toHaveText('UI e2e-build') },
       { spec: 'Source count is zero', check: async () => await expect(page.getByTestId('source-count')).toHaveText('0') },
+      { spec: 'Thumbnail garbage starts at zero', check: async () => await expect(page.getByTestId('thumbnail-garbage-bytes')).toHaveText('0') },
       { spec: 'Recent scans empty state is visible', check: async () => await expect(page.getByTestId('scans-empty')).toBeVisible() }
     ]
   });
@@ -121,6 +122,23 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     ]
   });
 
+  const staleThumbnail = '/tmp/photostore-e2e-store/thumbnails/jpeg/240/old-renderer/aa/bb/stale.jpg';
+  mkdirSync('/tmp/photostore-e2e-store/thumbnails/jpeg/240/old-renderer/aa/bb', { recursive: true });
+  writeFileSync(staleThumbnail, 'stale thumbnail');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByTestId('thumbnail-garbage-bytes')).toHaveText('15');
+  await page.getByTestId('collect-thumbnail-garbage').click();
+  await tester.step('thumbnail-garbage-collected', {
+    description: 'The dashboard reports stale thumbnail renderer output and removes it through explicit garbage collection.',
+    verifications: [
+      { spec: 'Thumbnail garbage collection job completed', check: async () => await expect(page.getByTestId('job-status')).toContainText('thumbnail_gc: completed') },
+      { spec: 'Thumbnail garbage progress reports removed bytes', check: async () => await expect(page.getByTestId('job-latest-progress')).toHaveAttribute('title', /thumbnail garbage bytes removed/) },
+      { spec: 'Thumbnail garbage byte counter drops to zero', check: async () => await expect(page.getByTestId('thumbnail-garbage-bytes')).toHaveText('0') },
+      { spec: 'Thumbnail garbage button disables after collection', check: async () => await expect(page.getByTestId('collect-thumbnail-garbage')).toBeDisabled() }
+    ]
+  });
+
+  await page.getByTestId('scan-table').getByRole('button', { name: 'Status' }).click();
   await page.getByTestId('toggle-job-log').click();
   await tester.step('job-log-opened', {
     description: 'Opening the job log reveals the scrollable acquisition log.',

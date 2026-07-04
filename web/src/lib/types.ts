@@ -6,6 +6,8 @@ export type StoreSummary = {
   scan_count: number;
   content_count: number;
   retained_duplicate_bytes: number;
+  thumbnail_garbage_bytes: number;
+  thumbnail_garbage_files: number;
   last_scan_completed_at_ms: number | null;
 };
 

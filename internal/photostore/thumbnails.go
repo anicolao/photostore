@@ -37,6 +37,12 @@ type ThumbnailIssue struct {
 	Error          string `json:"error"`
 }
 
+type ThumbnailGarbageSummary struct {
+	Files      int      `json:"files"`
+	Bytes      int64    `json:"bytes"`
+	Namespaces []string `json:"namespaces"`
+}
+
 type thumbnailContentGroup struct {
 	ContentRef string
 	Path       string
@@ -218,6 +224,69 @@ func (s *Store) ThumbnailReport(scanID string) (*ThumbnailSummary, error) {
 		summary.ScanID = scanID
 	}
 	return &summary, nil
+}
+
+func (s *Store) ThumbnailGarbageSummary() (ThumbnailGarbageSummary, error) {
+	return s.thumbnailGarbage(false, nil)
+}
+
+func (s *Store) CollectThumbnailGarbage(progress ProgressFunc) (ThumbnailGarbageSummary, error) {
+	return s.thumbnailGarbage(true, progress)
+}
+
+func (s *Store) thumbnailGarbage(deleteFiles bool, progress ProgressFunc) (ThumbnailGarbageSummary, error) {
+	root := filepath.Join(s.Root, "thumbnails", "jpeg", fmt.Sprint(thumbnailMaxDimension))
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ThumbnailGarbageSummary{}, nil
+		}
+		return ThumbnailGarbageSummary{}, err
+	}
+	var summary ThumbnailGarbageSummary
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		namespace := entry.Name()
+		if namespace == thumbnailRendererVersion {
+			continue
+		}
+		namespacePath := filepath.Join(root, namespace)
+		beforeFiles := summary.Files
+		beforeBytes := summary.Bytes
+		err := filepath.WalkDir(namespacePath, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if d.IsDir() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			summary.Files++
+			summary.Bytes += info.Size()
+			return nil
+		})
+		if err != nil {
+			return summary, err
+		}
+		if summary.Files != beforeFiles || summary.Bytes != beforeBytes {
+			summary.Namespaces = append(summary.Namespaces, namespace)
+		}
+		if deleteFiles {
+			progressf(progress, "removing thumbnail namespace %s (%d files, %d bytes)", namespace, summary.Files-beforeFiles, summary.Bytes-beforeBytes)
+			if err := os.RemoveAll(namespacePath); err != nil {
+				return summary, err
+			}
+		}
+	}
+	if deleteFiles {
+		progressf(progress, "thumbnail garbage removed: %d files, %d bytes", summary.Files, summary.Bytes)
+	}
+	return summary, nil
 }
 
 func (s *Store) EnsureThumbnailForObject(storedObjectID string) error {

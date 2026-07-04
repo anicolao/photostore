@@ -223,6 +223,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/metadata/missing", s.handleMetadataMissing)
 	s.mux.HandleFunc("POST /api/metadata/refresh-missing", s.handleRefreshMissingMetadata)
 	s.mux.HandleFunc("POST /api/duplicates/deduplicate", s.handleDeduplicateDuplicates)
+	s.mux.HandleFunc("POST /api/thumbnails/gc", s.handleCollectThumbnailGarbage)
 	s.mux.HandleFunc("GET /api/events", s.handleEvents)
 	s.mux.HandleFunc("GET /api/events/stream", s.handleEventStream)
 	s.mux.HandleFunc("GET /api/jobs", s.handleJobs)
@@ -558,6 +559,21 @@ func (s *Server) handleDeduplicateDuplicates(w http.ResponseWriter, r *http.Requ
 			return "", err
 		}
 		return summary.RequestID, nil
+	})
+	writeJSON(w, http.StatusAccepted, job)
+}
+
+func (s *Server) handleCollectThumbnailGarbage(w http.ResponseWriter, r *http.Request) {
+	job := s.startJob("thumbnail_gc", func(progress ProgressFunc) (string, error) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		summary, err := s.store.CollectThumbnailGarbage(progress)
+		if err != nil {
+			return "", err
+		}
+		progressf(progress, "thumbnail garbage files removed: %d", summary.Files)
+		progressf(progress, "thumbnail garbage bytes removed: %d", summary.Bytes)
+		return "thumbnail_gc", nil
 	})
 	writeJSON(w, http.StatusAccepted, job)
 }

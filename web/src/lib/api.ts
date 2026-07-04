@@ -77,6 +77,13 @@ export function deduplicateDuplicates(): Promise<Job> {
   });
 }
 
+export function collectThumbnailGarbage(): Promise<Job> {
+  return request('/api/thumbnails/gc', {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+}
+
 export function getReport(scanID: string): Promise<ScanReport> {
   return request(`/api/scans/${scanID}/report`);
 }

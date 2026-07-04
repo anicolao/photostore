@@ -115,6 +115,53 @@ func TestThumbnailsAreStoredPerContent(t *testing.T) {
 	}
 }
 
+func TestThumbnailGarbageCollectsInactiveRendererNamespaces(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	currentPath := filepath.Join(storePath, "thumbnails", "jpeg", "240", thumbnailRendererVersion, "aa", "bb", "current.jpg")
+	stalePath := filepath.Join(storePath, "thumbnails", "jpeg", "240", "old-renderer", "cc", "dd", "stale.jpg")
+	mustMkdir(t, filepath.Dir(currentPath))
+	mustMkdir(t, filepath.Dir(stalePath))
+	mustWrite(t, currentPath, []byte("current"))
+	mustWrite(t, stalePath, []byte("stale bytes"))
+
+	summary, err := st.ThumbnailGarbageSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Files != 1 || summary.Bytes != int64(len("stale bytes")) {
+		t.Fatalf("garbage summary = %#v, want one stale file", summary)
+	}
+
+	removed, err := st.CollectThumbnailGarbage(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.Files != summary.Files || removed.Bytes != summary.Bytes {
+		t.Fatalf("removed summary = %#v, want %#v", removed, summary)
+	}
+	if _, err := os.Stat(stalePath); !os.IsNotExist(err) {
+		t.Fatalf("stale thumbnail stat err = %v, want not exist", err)
+	}
+	if _, err := os.Stat(currentPath); err != nil {
+		t.Fatalf("current thumbnail removed: %v", err)
+	}
+
+	after, err := st.ThumbnailGarbageSummary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Files != 0 || after.Bytes != 0 {
+		t.Fatalf("garbage after collection = %#v, want empty", after)
+	}
+}
+
 func twoColorJPEG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))

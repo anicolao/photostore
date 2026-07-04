@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import { addSource, deduplicateDuplicates, getInventories, getJobs, getScans, getSources, getStore, refreshMissingMetadata, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
+  import { addSource, collectThumbnailGarbage, deduplicateDuplicates, getInventories, getJobs, getScans, getSources, getStore, refreshMissingMetadata, resumeScan, startSingleSourceScan, startSourceScan } from '$lib/api';
   import type { HistoricalInventory, Job, ScanProjection, ServerEvent, SourceRoot, StoreSummary } from '$lib/types';
 
   let store: StoreSummary | null = null;
@@ -218,6 +218,10 @@
     await runScan(deduplicateDuplicates);
   }
 
+  async function collectThumbnails() {
+    await runScan(collectThumbnailGarbage);
+  }
+
   function formatBytes(bytes: number) {
     return new Intl.NumberFormat('en-CA').format(bytes);
   }
@@ -335,6 +339,7 @@
       <a class="button-link" data-testid="metadata-link" href="/metadata">Metadata</a>
       <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={!hydrated || runningJobActive}>Refresh metadata</button>
       <button data-testid="deduplicate-duplicates" on:click={deduplicate} disabled={!hydrated || runningJobActive || (store?.retained_duplicate_bytes ?? 0) === 0}>Deduplicate</button>
+      <button data-testid="collect-thumbnail-garbage" on:click={collectThumbnails} disabled={!hydrated || runningJobActive || (store?.thumbnail_garbage_bytes ?? 0) === 0}>GC thumbnails</button>
       <button on:click={() => refresh(true)} disabled={!hydrated || loading}>Refresh</button>
     </div>
   </header>
@@ -359,6 +364,11 @@
     <div>
       <span>Duplicate bytes</span>
       <strong data-testid="duplicate-garbage-bytes">{formatBytes(store?.retained_duplicate_bytes ?? 0)}</strong>
+    </div>
+    <div>
+      <span>Thumbnail garbage</span>
+      <strong data-testid="thumbnail-garbage-bytes">{formatBytes(store?.thumbnail_garbage_bytes ?? 0)}</strong>
+      <small data-testid="thumbnail-garbage-files">{formatBytes(store?.thumbnail_garbage_files ?? 0)} files</small>
     </div>
   </section>
 
@@ -544,7 +554,7 @@
 
   .summary {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 12px;
     margin: 18px 0;
   }
@@ -570,6 +580,12 @@
     display: block;
     margin-top: 4px;
     font-size: 24px;
+  }
+
+  .summary small {
+    display: block;
+    color: #5f6368;
+    font-size: 12px;
   }
 
   section {
