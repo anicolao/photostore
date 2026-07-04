@@ -239,6 +239,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStore(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	summary, err := s.store.Summary()
 	if err != nil {
 		writeError(w, err)

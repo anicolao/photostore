@@ -257,6 +257,9 @@ func (s *Store) thumbnailGarbage(deleteFiles bool, progress ProgressFunc) (Thumb
 		beforeBytes := summary.Bytes
 		err := filepath.WalkDir(namespacePath, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
+				if os.IsNotExist(walkErr) {
+					return nil
+				}
 				return walkErr
 			}
 			if d.IsDir() {
@@ -264,6 +267,9 @@ func (s *Store) thumbnailGarbage(deleteFiles bool, progress ProgressFunc) (Thumb
 			}
 			info, err := d.Info()
 			if err != nil {
+				if os.IsNotExist(err) {
+					return nil
+				}
 				return err
 			}
 			summary.Files++
@@ -271,6 +277,9 @@ func (s *Store) thumbnailGarbage(deleteFiles bool, progress ProgressFunc) (Thumb
 			return nil
 		})
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return summary, err
 		}
 		if summary.Files != beforeFiles || summary.Bytes != beforeBytes {
