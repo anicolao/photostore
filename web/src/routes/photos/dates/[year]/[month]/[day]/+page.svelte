@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { getDatedPhotos } from '$lib/api';
+  import { objectURLWithContext } from '$lib/navigation';
   import type { DatedPhoto, DatedPhotoResponse } from '$lib/types';
 
   let year = '';
@@ -52,7 +53,7 @@
     <section>
       <div class="photo-grid" data-testid="date-photo-grid">
         {#each response?.photos ?? [] as photo}
-          <a class="photo-card" data-testid="date-photo-card" href={photo.view_url}>
+          <a class="photo-card" data-testid="date-photo-card" href={objectURLWithContext(photo.view_url, { list: 'date', date: `${year}-${month}-${day}` })}>
             <span class="thumb-wrap">
               <img data-testid="date-thumbnail-image" src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
             </span>

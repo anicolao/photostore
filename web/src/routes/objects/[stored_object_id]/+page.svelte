@@ -1,14 +1,23 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { page } from '$app/stores';
-  import { getObjectMetadata } from '$lib/api';
-  import type { ObjectMetadata } from '$lib/types';
+  import { getObjectMetadata, getObjectNavigation } from '$lib/api';
+  import type { ObjectMetadata, ObjectNavigation } from '$lib/types';
 
   let storedObjectID = '';
+  let currentNavigationQuery = '';
+  let loadedObjectKey = '';
   let metadata: ObjectMetadata | null = null;
+  let navigation: ObjectNavigation | null = null;
   let metadataError = '';
+  let navigationError = '';
   let infoOpen = false;
 
+  $: storedObjectID = $page.params.stored_object_id ?? '';
+  $: currentNavigationQuery = navigationQuery($page.url.searchParams);
+  $: if (storedObjectID && `${storedObjectID}?${currentNavigationQuery}` !== loadedObjectKey) {
+    loadedObjectKey = `${storedObjectID}?${currentNavigationQuery}`;
+    void loadObject(storedObjectID, currentNavigationQuery);
+  }
   $: bytesURL = storedObjectID ? `/api/objects/${storedObjectID}/bytes` : '';
   $: mapURL = storedObjectID ? `/api/objects/${storedObjectID}/map.png` : '';
   $: fields = metadata ? Object.entries(metadata.fields).toSorted(([a], [b]) => a.localeCompare(b)) : [];
@@ -17,14 +26,32 @@
   $: location = metadata ? locationLabel(metadata.fields) : '';
   $: coordinates = metadata ? gpsCoordinates(metadata.fields) : null;
 
-  onMount(async () => {
-    storedObjectID = $page.params.stored_object_id ?? '';
+  async function loadObject(nextStoredObjectID: string, query: string) {
+    const requestKey = `${nextStoredObjectID}?${query}`;
+    metadata = null;
+    navigation = null;
+    metadataError = '';
+    navigationError = '';
     try {
-      metadata = await getObjectMetadata(storedObjectID);
+      const nextMetadata = await getObjectMetadata(nextStoredObjectID);
+      if (loadedObjectKey !== requestKey) return;
+      metadata = nextMetadata;
     } catch (err) {
+      if (loadedObjectKey !== requestKey) return;
       metadataError = String(err);
     }
-  });
+    if (!query) {
+      return;
+    }
+    try {
+      const nextNavigation = await getObjectNavigation(nextStoredObjectID, query);
+      if (loadedObjectKey !== requestKey) return;
+      navigation = nextNavigation;
+    } catch (err) {
+      if (loadedObjectKey !== requestKey) return;
+      navigationError = String(err);
+    }
+  }
 
   function fieldValue(field: Record<string, string>) {
     return field.raw ?? '';
@@ -91,6 +118,17 @@
     return num / den;
   }
 
+  function navigationQuery(params: URLSearchParams) {
+    const list = params.get('list');
+    if (!list) return '';
+    const next = new URLSearchParams();
+    next.set('list', list);
+    for (const key of ['scan_id', 'date']) {
+      const value = params.get(key);
+      if (value) next.set(key, value);
+    }
+    return next.toString();
+  }
 </script>
 
 <svelte:head>
@@ -105,6 +143,23 @@
       <p><code>{storedObjectID}</code></p>
     </div>
     <div class="actions">
+      {#if navigation}
+        <nav class="object-nav" aria-label="Photo navigation" data-testid="object-navigation">
+          {#if navigation.previous}
+            <a class="button-link" data-testid="previous-photo" href={navigation.previous.view_url}>Previous</a>
+          {:else}
+            <span class="button-link disabled" data-testid="previous-photo-disabled">Previous</span>
+          {/if}
+          <span class="nav-context" data-testid="navigation-context">{navigation.label}</span>
+          {#if navigation.next}
+            <a class="button-link" data-testid="next-photo" href={navigation.next.view_url}>Next</a>
+          {:else}
+            <span class="button-link disabled" data-testid="next-photo-disabled">Next</span>
+          {/if}
+        </nav>
+      {:else if navigationError}
+        <span class="nav-error" data-testid="navigation-error">Navigation unavailable</span>
+      {/if}
       <a class="button-link" data-testid="open-original" href={bytesURL} target="_blank" rel="noreferrer">Open original</a>
       <button data-testid="toggle-exif" on:click={() => (infoOpen = !infoOpen)}>{infoOpen ? 'Hide info' : 'Info'}</button>
     </div>
@@ -185,6 +240,10 @@
     padding: 22px;
   }
 
+  main.info-open {
+    padding-right: 442px;
+  }
+
   header {
     display: flex;
     justify-content: space-between;
@@ -206,8 +265,16 @@
 
   .actions {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 8px;
     align-items: center;
+  }
+
+  .object-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .button-link {
@@ -217,6 +284,22 @@
     color: #202124;
     padding: 7px 10px;
     text-decoration: none;
+  }
+
+  .disabled {
+    color: #9aa0a6;
+    border-color: #d9dee7;
+    background: #f8fafc;
+  }
+
+  .nav-context,
+  .nav-error {
+    color: #5f6368;
+    font-size: 13px;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .viewer {
@@ -250,6 +333,12 @@
     background: #ffffff;
     padding: 18px;
     box-shadow: -8px 0 24px rgba(60, 64, 67, 0.18);
+  }
+
+  @media (max-width: 860px) {
+    main.info-open {
+      padding-right: 22px;
+    }
   }
 
   .panel-heading {

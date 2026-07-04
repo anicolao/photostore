@@ -1,4 +1,4 @@
-import type { AcquiredFile, DatedPhotoResponse, HistoricalInventory, Job, MetadataPhoto, MetadataSummary, ObjectMetadata, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
+import type { AcquiredFile, DatedPhotoResponse, HistoricalInventory, Job, MetadataPhoto, MetadataSummary, ObjectMetadata, ObjectNavigation, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -94,6 +94,10 @@ export function getAcquiredFiles(scanID: string): Promise<AcquiredFile[]> {
 
 export function getObjectMetadata(storedObjectID: string): Promise<ObjectMetadata> {
   return request(`/api/objects/${storedObjectID}/metadata`);
+}
+
+export function getObjectNavigation(storedObjectID: string, query: string): Promise<ObjectNavigation> {
+  return request(`/api/objects/${storedObjectID}/navigation?${query}`);
 }
 
 export function getMetadataSummary(): Promise<MetadataSummary> {

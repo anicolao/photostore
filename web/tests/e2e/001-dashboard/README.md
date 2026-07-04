@@ -107,7 +107,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 - [x] Photo grid lists A.JPG by filename
 - [x] Photo grid does not show the absolute source path
 - [x] Generated thumbnails are visible
-- [x] First acquired file opens the image view
+- [x] First acquired file opens the image view with scan context
 - [x] First thumbnail serves image/jpeg
 
 ---
@@ -118,6 +118,9 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 **Verifications:**
 - [x] Image view renders the photo
+- [x] Scan navigation context is visible
+- [x] Previous is disabled for the first scan photo
+- [x] Next photo button is available
 - [x] Open original serves image/jpeg
 - [x] EXIF panel is visible
 - [x] Camera summary is visible
@@ -128,9 +131,22 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ---
 
+## The image view can advance to the next photo in the scan order and preserve navigation context.
+
+![The image view can advance to the next photo in the scan order and preserve navigation context.](./screenshots/010-image-next-navigation.png)
+
+**Verifications:**
+- [x] The URL changes to another object
+- [x] The scan context remains in the URL
+- [x] The image remains visible after navigation
+- [x] Previous button points back into the same scan
+- [x] Navigation context remains visible
+
+---
+
 ## The date browser lists years derived from raw EXIF metadata.
 
-![The date browser lists years derived from raw EXIF metadata.](./screenshots/010-photos-by-date-years.png)
+![The date browser lists years derived from raw EXIF metadata.](./screenshots/011-photos-by-date-years.png)
 
 **Verifications:**
 - [x] Photos by date heading is visible
@@ -141,7 +157,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a year lists capture months.
 
-![Selecting a year lists capture months.](./screenshots/011-photos-by-date-months.png)
+![Selecting a year lists capture months.](./screenshots/012-photos-by-date-months.png)
 
 **Verifications:**
 - [x] Selected year heading is visible
@@ -151,7 +167,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a month lists capture days.
 
-![Selecting a month lists capture days.](./screenshots/012-photos-by-date-days.png)
+![Selecting a month lists capture days.](./screenshots/013-photos-by-date-days.png)
 
 **Verifications:**
 - [x] Selected month heading is visible
@@ -161,7 +177,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a capture day opens a thumbnail grid for that date.
 
-![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/013-photos-by-date-thumbnails.png)
+![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/014-photos-by-date-thumbnails.png)
 
 **Verifications:**
 - [x] Selected capture day heading is visible
@@ -173,7 +189,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The metadata review page shows extraction results and photos where no metadata was found.
 
-![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/014-metadata-review.png)
+![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/015-metadata-review.png)
 
 **Verifications:**
 - [x] Metadata heading is visible
@@ -192,7 +208,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The dashboard can trigger a metadata refresh for photos without recorded metadata results.
 
-![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/015-metadata-refresh-triggered.png)
+![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/016-metadata-refresh-triggered.png)
 
 **Verifications:**
 - [x] Metadata refresh job completed

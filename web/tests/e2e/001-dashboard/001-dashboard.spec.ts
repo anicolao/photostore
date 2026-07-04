@@ -161,7 +161,7 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
       { spec: 'Photo grid lists A.JPG by filename', check: async () => await expect(page.getByTestId('photo-grid')).toContainText('A.JPG') },
       { spec: 'Photo grid does not show the absolute source path', check: async () => await expect(page.getByTestId('photo-grid')).not.toContainText('/tmp/photostore-e2e-source') },
       { spec: 'Generated thumbnails are visible', check: async () => await expect(page.getByTestId('thumbnail-image').first()).toBeVisible() },
-      { spec: 'First acquired file opens the image view', check: async () => await expect(page.getByTestId('photo-card').first()).toHaveAttribute('href', /\/objects\//) },
+      { spec: 'First acquired file opens the image view with scan context', check: async () => await expect(page.getByTestId('photo-card').first()).toHaveAttribute('href', /\/objects\/.*list=scan.*scan_id=scan_/) },
       {
         spec: 'First thumbnail serves image/jpeg',
         check: async () => {
@@ -176,11 +176,15 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
   });
 
   await page.getByTestId('photo-card').first().click();
+  const firstImageURL = page.url();
   await page.getByTestId('toggle-exif').click();
   await tester.step('image-exif-side-panel', {
     description: 'The image view shows the original image and a readable information side panel.',
     verifications: [
       { spec: 'Image view renders the photo', check: async () => await expect(page.getByTestId('object-image')).toBeVisible() },
+      { spec: 'Scan navigation context is visible', check: async () => await expect(page.getByTestId('navigation-context')).toContainText('Scan scan_') },
+      { spec: 'Previous is disabled for the first scan photo', check: async () => await expect(page.getByTestId('previous-photo-disabled')).toBeVisible() },
+      { spec: 'Next photo button is available', check: async () => await expect(page.getByTestId('next-photo')).toHaveAttribute('href', /list=scan/) },
       { spec: 'Open original serves image/jpeg', check: async () => {
         const originalHref = await page.getByTestId('open-original').getAttribute('href');
         expect(originalHref).toBeTruthy();
@@ -201,6 +205,18 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
         expect(mapResponse.headers()['content-type']).toContain('image/png');
       } },
       { spec: 'Raw EXIF debug section is available', check: async () => await expect(page.getByTestId('raw-exif')).toContainText('Raw EXIF') }
+    ]
+  });
+
+  await page.getByTestId('next-photo').click();
+  await tester.step('image-next-navigation', {
+    description: 'The image view can advance to the next photo in the scan order and preserve navigation context.',
+    verifications: [
+      { spec: 'The URL changes to another object', check: async () => expect(page.url()).not.toBe(firstImageURL) },
+      { spec: 'The scan context remains in the URL', check: async () => expect(page.url()).toContain('list=scan') },
+      { spec: 'The image remains visible after navigation', check: async () => await expect(page.getByTestId('object-image')).toBeVisible() },
+      { spec: 'Previous button points back into the same scan', check: async () => await expect(page.getByTestId('previous-photo')).toHaveAttribute('href', /list=scan/) },
+      { spec: 'Navigation context remains visible', check: async () => await expect(page.getByTestId('navigation-context')).toContainText('Scan scan_') }
     ]
   });
 

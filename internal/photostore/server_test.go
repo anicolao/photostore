@@ -178,6 +178,20 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if acquired[0].Filename == "" {
 		t.Fatalf("missing filename in acquired file: %#v", acquired[0])
 	}
+	var nav ObjectNavigationProjection
+	getJSON(t, ts.URL+"/api/objects/"+acquired[0].StoredObjectID+"/navigation?list=scan&scan_id="+*done.ResultRef, &nav)
+	if nav.Current.StoredObjectID != acquired[0].StoredObjectID {
+		t.Fatalf("navigation current = %s, want %s", nav.Current.StoredObjectID, acquired[0].StoredObjectID)
+	}
+	if nav.Previous != nil {
+		t.Fatalf("first acquired file previous = %#v, want nil", nav.Previous)
+	}
+	if nav.Next == nil || nav.Next.StoredObjectID != acquired[1].StoredObjectID {
+		t.Fatalf("navigation next = %#v, want %s", nav.Next, acquired[1].StoredObjectID)
+	}
+	if !strings.Contains(nav.Next.ViewURL, "list=scan") || !strings.Contains(nav.Next.ViewURL, "scan_id="+*done.ResultRef) {
+		t.Fatalf("navigation next url = %q, want scan context", nav.Next.ViewURL)
+	}
 	var metadataSummary MetadataSummaryProjection
 	getJSON(t, ts.URL+"/api/metadata/summary", &metadataSummary)
 	if metadataSummary.FailedCount != 1 {

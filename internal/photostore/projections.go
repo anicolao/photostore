@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +131,20 @@ type MetadataPhotoProjection struct {
 	PixelCount     int    `json:"pixel_count,omitempty"`
 	ViewURL        string `json:"view_url"`
 	ThumbnailURL   string `json:"thumbnail_url"`
+}
+
+type ObjectNavigationProjection struct {
+	List     string                `json:"list"`
+	Label    string                `json:"label"`
+	Current  ObjectNavigationItem  `json:"current"`
+	Previous *ObjectNavigationItem `json:"previous"`
+	Next     *ObjectNavigationItem `json:"next"`
+}
+
+type ObjectNavigationItem struct {
+	StoredObjectID string `json:"stored_object_id"`
+	Filename       string `json:"filename"`
+	ViewURL        string `json:"view_url"`
 }
 
 type DatedPhotoResponse struct {
@@ -685,6 +700,125 @@ func (s *Store) MetadataMissing() ([]MetadataPhotoProjection, error) {
 		photos = append(photos, photo)
 	}
 	return photos, rows.Err()
+}
+
+func (s *Store) ObjectNavigation(storedObjectID string, query url.Values) (ObjectNavigationProjection, error) {
+	list := query.Get("list")
+	var items []ObjectNavigationItem
+	var label string
+	switch list {
+	case "scan":
+		scanID := query.Get("scan_id")
+		if scanID == "" {
+			return ObjectNavigationProjection{}, errors.New("scan_id is required for scan navigation")
+		}
+		files, err := s.AcquiredFiles(scanID)
+		if err != nil {
+			return ObjectNavigationProjection{}, err
+		}
+		items = navigationItemsFromAcquired(files)
+		label = "Scan " + scanID
+	case "date":
+		date := query.Get("date")
+		if date == "" {
+			return ObjectNavigationProjection{}, errors.New("date is required for date navigation")
+		}
+		photos, err := s.photosForCaptureDate(date)
+		if err != nil {
+			return ObjectNavigationProjection{}, err
+		}
+		items = navigationItemsFromDated(photos)
+		label = date
+	case "undated":
+		resp, err := s.UndatedPhotos()
+		if err != nil {
+			return ObjectNavigationProjection{}, err
+		}
+		items = navigationItemsFromDated(resp.Photos)
+		label = "Undated photos"
+	case "metadata_failed":
+		photos, err := s.MetadataFailures()
+		if err != nil {
+			return ObjectNavigationProjection{}, err
+		}
+		items = navigationItemsFromMetadata(photos)
+		label = "No metadata found"
+	case "metadata_missing":
+		photos, err := s.MetadataMissing()
+		if err != nil {
+			return ObjectNavigationProjection{}, err
+		}
+		items = navigationItemsFromMetadata(photos)
+		label = "Not scanned by current extractor"
+	default:
+		return ObjectNavigationProjection{}, errors.New("unsupported or missing navigation list")
+	}
+	return objectNavigationFromItems(storedObjectID, list, label, query, items)
+}
+
+func navigationItemsFromAcquired(files []AcquiredFileProjection) []ObjectNavigationItem {
+	items := make([]ObjectNavigationItem, 0, len(files))
+	for _, file := range files {
+		items = append(items, ObjectNavigationItem{StoredObjectID: file.StoredObjectID, Filename: file.Filename})
+	}
+	return items
+}
+
+func navigationItemsFromDated(photos []DatedPhotoProjection) []ObjectNavigationItem {
+	items := make([]ObjectNavigationItem, 0, len(photos))
+	for _, photo := range photos {
+		items = append(items, ObjectNavigationItem{StoredObjectID: photo.StoredObjectID, Filename: photo.Filename})
+	}
+	return items
+}
+
+func navigationItemsFromMetadata(photos []MetadataPhotoProjection) []ObjectNavigationItem {
+	items := make([]ObjectNavigationItem, 0, len(photos))
+	for _, photo := range photos {
+		items = append(items, ObjectNavigationItem{StoredObjectID: photo.StoredObjectID, Filename: photo.Filename})
+	}
+	return items
+}
+
+func objectNavigationFromItems(storedObjectID, list, label string, query url.Values, items []ObjectNavigationItem) (ObjectNavigationProjection, error) {
+	currentIndex := -1
+	for i := range items {
+		items[i].ViewURL = objectViewURLWithContext(items[i].StoredObjectID, query)
+		if items[i].StoredObjectID == storedObjectID {
+			currentIndex = i
+		}
+	}
+	if currentIndex < 0 {
+		return ObjectNavigationProjection{}, sql.ErrNoRows
+	}
+	out := ObjectNavigationProjection{
+		List:    list,
+		Label:   label,
+		Current: items[currentIndex],
+	}
+	if currentIndex > 0 {
+		prev := items[currentIndex-1]
+		out.Previous = &prev
+	}
+	if currentIndex+1 < len(items) {
+		next := items[currentIndex+1]
+		out.Next = &next
+	}
+	return out, nil
+}
+
+func objectViewURLWithContext(storedObjectID string, query url.Values) string {
+	next := url.Values{}
+	for key, values := range query {
+		for _, value := range values {
+			next.Add(key, value)
+		}
+	}
+	encoded := next.Encode()
+	if encoded == "" {
+		return "/objects/" + storedObjectID
+	}
+	return "/objects/" + storedObjectID + "?" + encoded
 }
 
 func errorMessageFromJSON(raw string) string {
