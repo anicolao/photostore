@@ -12,13 +12,14 @@ Scan duplicate JPEG content, open the asset view, set quality/status/visibility,
 
 ---
 
-## The asset grid shows one asset for duplicated JPEG content with default triage state.
+## The asset grid shows duplicated JPEG content as one asset with default triage state.
 
-![The asset grid shows one asset for duplicated JPEG content with default triage state.](./screenshots/001-asset-grid-defaults.png)
+![The asset grid shows duplicated JPEG content as one asset with default triage state.](./screenshots/001-asset-grid-defaults.png)
 
 **Verifications:**
 - [x] Assets heading is visible
 - [x] Duplicate fixture content appears as one asset card
+- [x] Asset pager reports the current page range
 - [x] Default quality is Unrated
 - [x] Default status is Triage
 - [x] Default visibility is Normal
@@ -49,9 +50,20 @@ Scan duplicate JPEG content, open the asset view, set quality/status/visibility,
 
 ---
 
+## A direct status query URL filters the asset grid and preserves the active filter state.
+
+![A direct status query URL filters the asset grid and preserves the active filter state.](./screenshots/004-asset-status-query-filter.png)
+
+**Verifications:**
+- [x] Reviewed status filter is active
+- [x] Status-filtered grid contains the reviewed asset
+- [x] Status-filtered pager shows one displayed asset
+
+---
+
 ## The asset grid filters by quality, status, visibility, and user-defined label.
 
-![The asset grid filters by quality, status, visibility, and user-defined label.](./screenshots/004-asset-filters.png)
+![The asset grid filters by quality, status, visibility, and user-defined label.](./screenshots/005-asset-filters.png)
 
 **Verifications:**
 - [x] Best filter is active
@@ -63,7 +75,7 @@ Scan duplicate JPEG content, open the asset view, set quality/status/visibility,
 
 ## A user-defined label can be removed from the asset.
 
-![A user-defined label can be removed from the asset.](./screenshots/005-asset-label-removed.png)
+![A user-defined label can be removed from the asset.](./screenshots/006-asset-label-removed.png)
 
 **Verifications:**
 - [x] Family label is no longer visible

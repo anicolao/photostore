@@ -102,6 +102,15 @@ export type Asset = {
   created_at_ms: number;
 };
 
+export type AssetPage = {
+  assets: Asset[];
+  total: number;
+  limit: number;
+  offset: number;
+  next_offset?: number;
+  prev_offset?: number;
+};
+
 export type AssetSource = {
   source_occurrence_id: string;
   stored_object_id: string;

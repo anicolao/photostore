@@ -130,7 +130,24 @@ func TestServerAssetCollectionsSerializeEmptyArrays(t *testing.T) {
 	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
 	defer ts.Close()
 
-	for _, path := range []string{"/api/assets", "/api/labels"} {
+	res, err := http.Get(ts.URL + "/api/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = bytes.TrimSpace(body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/assets status = %d, want 200; body = %s", res.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte(`"assets":[]`)) {
+		t.Fatalf("GET /api/assets body = %s, want empty assets array", body)
+	}
+
+	for _, path := range []string{"/api/labels"} {
 		res, err := http.Get(ts.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -223,9 +240,11 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 		t.Fatalf("navigation next url = %q, want scan context", nav.Next.ViewURL)
 	}
 	var assets []AssetProjection
-	getJSON(t, ts.URL+"/api/assets", &assets)
-	if len(assets) != 1 {
-		t.Fatalf("assets = %d, want one unique content asset", len(assets))
+	var assetsPage AssetPageProjection
+	getJSON(t, ts.URL+"/api/assets?limit=1", &assetsPage)
+	assets = assetsPage.Assets
+	if assetsPage.Total != 1 || len(assets) != 1 {
+		t.Fatalf("assets page = %#v, want one unique content asset", assetsPage)
 	}
 	if assets[0].Quality != "Unrated" || assets[0].Status != "Triage" || assets[0].Visibility != "Normal" {
 		t.Fatalf("asset defaults = quality %s status %s visibility %s", assets[0].Quality, assets[0].Status, assets[0].Visibility)
@@ -249,10 +268,15 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if len(detail.Labels) != 1 || detail.Labels[0] != "Family" {
 		t.Fatalf("asset labels = %#v, want Family", detail.Labels)
 	}
-	var privateAssets []AssetProjection
-	getJSON(t, ts.URL+"/api/assets?quality=Best&status=Reviewed&visibility=Private&label=family", &privateAssets)
-	if len(privateAssets) != 1 || privateAssets[0].AssetID != assets[0].AssetID {
-		t.Fatalf("filtered assets = %#v, want triaged asset", privateAssets)
+	var privateAssetsPage AssetPageProjection
+	getJSON(t, ts.URL+"/api/assets?quality=Best&status=Reviewed&visibility=Private&label=family&limit=1", &privateAssetsPage)
+	if privateAssetsPage.Total != 1 || len(privateAssetsPage.Assets) != 1 || privateAssetsPage.Assets[0].AssetID != assets[0].AssetID {
+		t.Fatalf("filtered assets = %#v, want triaged asset", privateAssetsPage)
+	}
+	var emptyPage AssetPageProjection
+	getJSON(t, ts.URL+"/api/assets?status=Triage&limit=1", &emptyPage)
+	if emptyPage.Total != 0 || len(emptyPage.Assets) != 0 {
+		t.Fatalf("triage filtered assets after review = %#v, want empty page", emptyPage)
 	}
 	var labels []LabelProjection
 	getJSON(t, ts.URL+"/api/labels", &labels)

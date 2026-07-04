@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -164,6 +165,15 @@ type AssetProjection struct {
 	ThumbnailURL           string   `json:"thumbnail_url"`
 	SourceOccurrenceCount  int      `json:"source_occurrence_count"`
 	CreatedAtMS            int64    `json:"created_at_ms"`
+}
+
+type AssetPageProjection struct {
+	Assets     []AssetProjection `json:"assets"`
+	Total      int               `json:"total"`
+	Limit      int               `json:"limit"`
+	Offset     int               `json:"offset"`
+	NextOffset *int              `json:"next_offset,omitempty"`
+	PrevOffset *int              `json:"prev_offset,omitempty"`
 }
 
 type AssetDetailProjection struct {
@@ -743,7 +753,7 @@ func (s *Store) MetadataMissing() ([]MetadataPhotoProjection, error) {
 	return photos, rows.Err()
 }
 
-func (s *Store) Assets(query url.Values) ([]AssetProjection, error) {
+func (s *Store) Assets(query url.Values) (AssetPageProjection, error) {
 	where := []string{"1 = 1"}
 	args := []any{}
 	if assetID := query.Get("asset_id"); assetID != "" {
@@ -769,6 +779,20 @@ func (s *Store) Assets(query url.Values) ([]AssetProjection, error) {
 		)`)
 		args = append(args, normalizeAssetLabel(label))
 	}
+	limit := boundedQueryInt(query.Get("limit"), 60, 1, 200)
+	offset := boundedQueryInt(query.Get("offset"), 0, 0, 1_000_000_000)
+	whereSQL := strings.Join(where, " and ")
+	var total int
+	if err := s.DB.QueryRow(fmt.Sprintf(`
+		select count(*)
+		from assets a
+		left join asset_quality aq on aq.asset_id = a.asset_id
+		left join asset_status ast on ast.asset_id = a.asset_id
+		left join asset_visibility av on av.asset_id = a.asset_id
+		where %s`, whereSQL), args...).Scan(&total); err != nil {
+		return AssetPageProjection{}, err
+	}
+	pageArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := s.DB.Query(fmt.Sprintf(`
 		with capture as (
 			select content_ref, min(capture_date) as capture_date, min(capture_time_local) as capture_time_local
@@ -792,48 +816,58 @@ func (s *Store) Assets(query url.Values) ([]AssetProjection, error) {
 		left join asset_visibility av on av.asset_id = a.asset_id
 		left join capture pct on pct.content_ref = a.content_ref
 		where %s
-		order by coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id`, strings.Join(where, " and ")), args...)
+		order by coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id
+		limit ? offset ?`, whereSQL), pageArgs...)
 	if err != nil {
-		return nil, err
+		return AssetPageProjection{}, err
 	}
 	assets := []AssetProjection{}
 	for rows.Next() {
 		var asset AssetProjection
 		if err := rows.Scan(&asset.AssetID, &asset.ContentRef, &asset.RepresentativeObjectID, &asset.Filename, &asset.Quality, &asset.Status, &asset.Visibility, &asset.CaptureDate, &asset.CaptureTimeLocal, &asset.CreatedAtMS, &asset.SourceOccurrenceCount); err != nil {
 			rows.Close()
-			return nil, err
+			return AssetPageProjection{}, err
 		}
 		assets = append(assets, asset)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
+		return AssetPageProjection{}, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, err
+		return AssetPageProjection{}, err
 	}
-	for i := range assets {
-		if err := s.hydrateAssetURLsAndLabels(&assets[i]); err != nil {
-			return nil, err
+	if err := s.hydrateAssets(&assets); err != nil {
+		return AssetPageProjection{}, err
+	}
+	page := AssetPageProjection{Assets: assets, Total: total, Limit: limit, Offset: offset}
+	if offset+limit < total {
+		next := offset + limit
+		page.NextOffset = &next
+	}
+	if offset > 0 {
+		prev := offset - limit
+		if prev < 0 {
+			prev = 0
 		}
-		assets[i].Camera = s.cameraForContentRef(assets[i].ContentRef)
+		page.PrevOffset = &prev
 	}
-	return assets, nil
+	return page, nil
 }
 
 func (s *Store) Asset(assetID string) (AssetDetailProjection, error) {
-	rows, err := s.Assets(url.Values{"asset_id": []string{assetID}})
+	page, err := s.Assets(url.Values{"asset_id": []string{assetID}, "limit": []string{"1"}})
 	if err != nil {
 		return AssetDetailProjection{}, err
 	}
-	if len(rows) == 0 {
+	if len(page.Assets) == 0 {
 		return AssetDetailProjection{}, sql.ErrNoRows
 	}
 	sources, err := s.AssetSources(assetID)
 	if err != nil {
 		return AssetDetailProjection{}, err
 	}
-	return AssetDetailProjection{AssetProjection: rows[0], Sources: sources}, nil
+	return AssetDetailProjection{AssetProjection: page.Assets[0], Sources: sources}, nil
 }
 
 func (s *Store) AssetSources(assetID string) ([]AssetSourceProjection, error) {
@@ -885,49 +919,111 @@ func (s *Store) Labels() ([]LabelProjection, error) {
 	return labels, rows.Err()
 }
 
-func (s *Store) hydrateAssetURLsAndLabels(asset *AssetProjection) error {
-	asset.ViewURL = "/objects/" + asset.RepresentativeObjectID
-	asset.BytesURL = "/api/objects/" + asset.RepresentativeObjectID + "/bytes"
-	asset.ThumbnailURL = "/api/objects/" + asset.RepresentativeObjectID + "/thumbnail"
-	rows, err := s.DB.Query(`select display_label from asset_labels where asset_id = ? order by display_label`, asset.AssetID)
+func boundedQueryInt(raw string, fallback, min, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func (s *Store) hydrateAssets(assets *[]AssetProjection) error {
+	if len(*assets) == 0 {
+		return nil
+	}
+	assetIDs := make([]string, 0, len(*assets))
+	contentRefs := make([]string, 0, len(*assets))
+	assetIndex := map[string]int{}
+	contentRefSet := map[string]struct{}{}
+	for i := range *assets {
+		asset := &(*assets)[i]
+		asset.ViewURL = "/objects/" + asset.RepresentativeObjectID
+		asset.BytesURL = "/api/objects/" + asset.RepresentativeObjectID + "/bytes"
+		asset.ThumbnailURL = "/api/objects/" + asset.RepresentativeObjectID + "/thumbnail"
+		asset.Labels = []string{}
+		assetIDs = append(assetIDs, asset.AssetID)
+		assetIndex[asset.AssetID] = i
+		if _, ok := contentRefSet[asset.ContentRef]; !ok {
+			contentRefs = append(contentRefs, asset.ContentRef)
+			contentRefSet[asset.ContentRef] = struct{}{}
+		}
+	}
+	if err := s.hydrateAssetLabels(assets, assetIDs, assetIndex); err != nil {
+		return err
+	}
+	return s.hydrateAssetCameras(assets, contentRefs)
+}
+
+func (s *Store) hydrateAssetLabels(assets *[]AssetProjection, assetIDs []string, assetIndex map[string]int) error {
+	query, args := inQuery(`select asset_id, display_label from asset_labels where asset_id in (%s) order by display_label`, assetIDs)
+	rows, err := s.DB.Query(query, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var label string
-		if err := rows.Scan(&label); err != nil {
+		var assetID, label string
+		if err := rows.Scan(&assetID, &label); err != nil {
 			return err
 		}
-		asset.Labels = append(asset.Labels, label)
+		if index, ok := assetIndex[assetID]; ok {
+			(*assets)[index].Labels = append((*assets)[index].Labels, label)
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) hydrateAssetCameras(assets *[]AssetProjection, contentRefs []string) error {
+	query, args := inQuery(`
+		select content_ref, fields_json
+		from content_metadata
+		where extractor_name = ? and extractor_version = ? and content_ref in (%s)`, contentRefs)
+	args = append([]any{metadataExtractorName, metadataExtractorVersion}, args...)
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	cameras := map[string]string{}
+	for rows.Next() {
+		var contentRef, fieldsJSON string
+		if err := rows.Scan(&contentRef, &fieldsJSON); err != nil {
+			return err
+		}
+		var fields map[string]map[string]string
+		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+			continue
+		}
+		make := metadataRaw(fields, "make")
+		model := metadataRaw(fields, "model")
+		cameras[contentRef] = strings.TrimSpace(strings.TrimSpace(make + " " + model))
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if asset.Labels == nil {
-		asset.Labels = []string{}
+	for i := range *assets {
+		(*assets)[i].Camera = cameras[(*assets)[i].ContentRef]
 	}
 	return nil
 }
 
-func (s *Store) cameraForContentRef(contentRef string) string {
-	var fieldsJSON string
-	err := s.DB.QueryRow(`
-		select fields_json
-		from content_metadata
-		where content_ref = ? and extractor_name = ? and extractor_version = ?`,
-		contentRef, metadataExtractorName, metadataExtractorVersion,
-	).Scan(&fieldsJSON)
-	if err != nil {
-		return ""
+func inQuery(format string, values []string) (string, []any) {
+	placeholders := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		args[i] = value
 	}
-	var fields map[string]map[string]string
-	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
-		return ""
-	}
-	make := metadataRaw(fields, "make")
-	model := metadataRaw(fields, "model")
-	return strings.TrimSpace(strings.TrimSpace(make + " " + model))
+	return fmt.Sprintf(format, strings.Join(placeholders, ",")), args
 }
 
 func metadataRaw(fields map[string]map[string]string, key string) string {

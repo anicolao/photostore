@@ -32,10 +32,11 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
 
   await page.getByTestId('assets-link').click();
   await tester.step('asset-grid-defaults', {
-    description: 'The asset grid shows one asset for duplicated JPEG content with default triage state.',
+    description: 'The asset grid shows duplicated JPEG content as one asset with default triage state.',
     verifications: [
       { spec: 'Assets heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Assets' })).toBeVisible() },
       { spec: 'Duplicate fixture content appears as one asset card', check: async () => await expect(page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' })).toHaveCount(1) },
+      { spec: 'Asset pager reports the current page range', check: async () => await expect(page.getByTestId('asset-page-range')).toHaveText(/^Showing 1-\d+ of \d+$/) },
       { spec: 'Default quality is Unrated', check: async () => await expect(page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' }).getByTestId('asset-quality')).toHaveText('Unrated') },
       { spec: 'Default status is Triage', check: async () => await expect(page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' }).getByTestId('asset-status')).toHaveText('Triage') },
       { spec: 'Default visibility is Normal', check: async () => await expect(page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' }).getByTestId('asset-visibility')).toHaveText('Normal') }
@@ -65,6 +66,16 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
       { spec: 'Reviewed status is selected', check: async () => await expect(page.getByTestId('status-Reviewed')).toHaveClass(/active/) },
       { spec: 'Private visibility is selected', check: async () => await expect(page.getByTestId('visibility-Private')).toHaveClass(/active/) },
       { spec: 'Family label is visible', check: async () => await expect(page.getByTestId('asset-detail-labels')).toContainText('Family') }
+    ]
+  });
+
+  await page.goto('/assets?status=Reviewed');
+  await tester.step('asset-status-query-filter', {
+    description: 'A direct status query URL filters the asset grid and preserves the active filter state.',
+    verifications: [
+      { spec: 'Reviewed status filter is active', check: async () => await expect(page.getByTestId('status-filter-Reviewed')).toHaveClass(/active/) },
+      { spec: 'Status-filtered grid contains the reviewed asset', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') },
+      { spec: 'Status-filtered pager shows one displayed asset', check: async () => await expect(page.getByTestId('asset-page-range')).toHaveText('Showing 1-1 of 1') }
     ]
   });
 

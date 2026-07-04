@@ -12,34 +12,70 @@
   let labels: LabelSummary[] = [];
   let loading = true;
   let error = '';
+  let total = 0;
+  let limit = 60;
+  let offset = 0;
+  let nextOffset: number | undefined;
+  let prevOffset: number | undefined;
   let quality = '';
   let status = '';
   let visibility = '';
   let label = '';
+  let currentQuery = '\u0000';
+  let loadToken = 0;
 
-  onMount(async () => {
-    quality = $page.url.searchParams.get('quality') ?? '';
-    status = $page.url.searchParams.get('status') ?? '';
-    visibility = $page.url.searchParams.get('visibility') ?? '';
-    label = $page.url.searchParams.get('label') ?? '';
-    await load();
+  onMount(() => {
+    const unsubscribe = page.subscribe(($page) => {
+      const nextQuery = $page.url.searchParams.toString();
+      if (nextQuery === currentQuery) return;
+      currentQuery = nextQuery;
+      void loadForURL($page.url);
+    });
+    return unsubscribe;
   });
 
-  async function load() {
+  async function loadForURL(url: URL) {
+    quality = url.searchParams.get('quality') ?? '';
+    status = url.searchParams.get('status') ?? '';
+    visibility = url.searchParams.get('visibility') ?? '';
+    label = url.searchParams.get('label') ?? '';
+    limit = boundedParam(url.searchParams.get('limit'), 60, 1, 200);
+    offset = boundedParam(url.searchParams.get('offset'), 0, 0, 1_000_000_000);
     loading = true;
     error = '';
+    const token = ++loadToken;
     const params = new URLSearchParams();
     if (quality) params.set('quality', quality);
     if (status) params.set('status', status);
     if (visibility) params.set('visibility', visibility);
     if (label) params.set('label', label);
+    params.set('limit', String(limit));
+    if (offset > 0) params.set('offset', String(offset));
     try {
-      [assets, labels] = await Promise.all([getAssets(params), getLabels()]);
+      const [page, nextLabels] = await Promise.all([getAssets(params), getLabels()]);
+      if (token !== loadToken) return;
+      assets = page.assets;
+      total = page.total;
+      limit = page.limit;
+      offset = page.offset;
+      nextOffset = page.next_offset;
+      prevOffset = page.prev_offset;
+      labels = nextLabels;
     } catch (err) {
+      if (token !== loadToken) return;
       error = String(err);
     } finally {
+      if (token !== loadToken) return;
       loading = false;
     }
+  }
+
+  function boundedParam(raw: string | null, fallback: number, min: number, max: number) {
+    const value = raw === null ? fallback : Number.parseInt(raw, 10);
+    if (!Number.isFinite(value)) return fallback;
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
   }
 
   function filteredHref(next: { quality?: string; status?: string; visibility?: string; label?: string }) {
@@ -52,6 +88,19 @@
     if (nextStatus) params.set('status', nextStatus);
     if (nextVisibility) params.set('visibility', nextVisibility);
     if (nextLabel) params.set('label', nextLabel);
+    params.set('limit', String(limit));
+    const query = params.toString();
+    return query ? `/assets?${query}` : '/assets';
+  }
+
+  function pageHref(nextOffset: number | undefined) {
+    const params = new URLSearchParams();
+    if (quality) params.set('quality', quality);
+    if (status) params.set('status', status);
+    if (visibility) params.set('visibility', visibility);
+    if (label) params.set('label', label);
+    params.set('limit', String(limit));
+    if (nextOffset && nextOffset > 0) params.set('offset', String(nextOffset));
     const query = params.toString();
     return query ? `/assets?${query}` : '/assets';
   }
@@ -59,6 +108,9 @@
   function formatCapture(asset: Asset) {
     return asset.capture_time_local || asset.capture_date || 'No capture time';
   }
+
+  $: pageStart = total === 0 ? 0 : offset + 1;
+  $: pageEnd = Math.min(offset + assets.length, total);
 </script>
 
 <svelte:head>
@@ -70,7 +122,7 @@
     <div>
       <a href="/">Dashboard</a>
       <h1>Assets</h1>
-      <p data-testid="asset-count">{assets.length} assets</p>
+      <p data-testid="asset-count">{total} assets</p>
     </div>
   </header>
 
@@ -113,6 +165,13 @@
     <section class="empty" data-testid="assets-empty">No assets match these filters.</section>
   {:else}
     <section>
+      <div class="pager" data-testid="asset-pager">
+        <span data-testid="asset-page-range">Showing {pageStart}-{pageEnd} of {total}</span>
+        <div>
+          <a class:disabled={prevOffset === undefined} aria-disabled={prevOffset === undefined} data-testid="asset-prev-page" href={prevOffset === undefined ? pageHref(offset) : pageHref(prevOffset)}>Previous</a>
+          <a class:disabled={nextOffset === undefined} aria-disabled={nextOffset === undefined} data-testid="asset-next-page" href={nextOffset === undefined ? pageHref(offset) : pageHref(nextOffset)}>Next</a>
+        </div>
+      </div>
       <div class="asset-grid" data-testid="asset-grid">
         {#each assets as asset}
           <a class="asset-card" data-testid="asset-card" href={`/assets/${asset.asset_id}`}>
@@ -203,6 +262,34 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
     gap: 14px;
+  }
+
+  .pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+    color: #5f6368;
+    font-size: 13px;
+  }
+
+  .pager div {
+    display: flex;
+    gap: 8px;
+  }
+
+  .pager a {
+    border: 1px solid #d9dee7;
+    border-radius: 6px;
+    padding: 5px 9px;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .pager a.disabled {
+    pointer-events: none;
+    opacity: 0.45;
   }
 
   .asset-card {

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -60,6 +61,60 @@ func TestScanSourcesAcquiresOnlyJPEGs(t *testing.T) {
 	}
 	if assetEvents != 1 {
 		t.Fatalf("AssetCreated events = %d, want 1", assetEvents)
+	}
+}
+
+func TestAssetsPagination(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), []byte("asset-a"))
+	mustWrite(t, filepath.Join(sourcePath, "B.JPG"), []byte("asset-b"))
+	mustWrite(t, filepath.Join(sourcePath, "C.JPG"), []byte("asset-c"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sourceID, err := st.AddSourceRoot(sourcePath, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSourceRootsWithOptions([]string{sourceID}, nil, ScanOptions{Workers: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstPage, err := st.Assets(url.Values{"limit": []string{"2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPage.Total != 3 || firstPage.Limit != 2 || firstPage.Offset != 0 || len(firstPage.Assets) != 2 {
+		t.Fatalf("first assets page = %#v, want total 3 limit 2 offset 0 length 2", firstPage)
+	}
+	if firstPage.NextOffset == nil || *firstPage.NextOffset != 2 {
+		t.Fatalf("first page next offset = %#v, want 2", firstPage.NextOffset)
+	}
+	if firstPage.PrevOffset != nil {
+		t.Fatalf("first page prev offset = %#v, want nil", firstPage.PrevOffset)
+	}
+
+	secondPage, err := st.Assets(url.Values{"limit": []string{"2"}, "offset": []string{"2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondPage.Total != 3 || secondPage.Limit != 2 || secondPage.Offset != 2 || len(secondPage.Assets) != 1 {
+		t.Fatalf("second assets page = %#v, want total 3 limit 2 offset 2 length 1", secondPage)
+	}
+	if secondPage.NextOffset != nil {
+		t.Fatalf("second page next offset = %#v, want nil", secondPage.NextOffset)
+	}
+	if secondPage.PrevOffset == nil || *secondPage.PrevOffset != 0 {
+		t.Fatalf("second page prev offset = %#v, want 0", secondPage.PrevOffset)
+	}
+	if firstPage.Assets[0].AssetID == secondPage.Assets[0].AssetID || firstPage.Assets[1].AssetID == secondPage.Assets[0].AssetID {
+		t.Fatalf("second page repeated a first-page asset: first=%#v second=%#v", firstPage.Assets, secondPage.Assets)
 	}
 }
 
