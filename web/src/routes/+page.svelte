@@ -38,6 +38,7 @@
     inventories = nextInventories;
     jobs = mergeJobs(jobs, nextJobs);
     applyJobs(jobs);
+    error = '';
     if (showLoading) {
       loading = false;
     }

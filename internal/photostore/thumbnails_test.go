@@ -162,6 +162,29 @@ func TestThumbnailGarbageCollectsInactiveRendererNamespaces(t *testing.T) {
 	}
 }
 
+func TestThumbnailGarbageSummaryIgnoresConcurrentlyRemovedNamespace(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	staleDir := filepath.Join(storePath, "thumbnails", "jpeg", "240", "old-renderer")
+	mustMkdir(t, staleDir)
+	if err := os.RemoveAll(staleDir); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := st.thumbnailGarbage(false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Files != 0 || summary.Bytes != 0 {
+		t.Fatalf("garbage summary = %#v, want empty", summary)
+	}
+}
+
 func twoColorJPEG(t *testing.T, width, height int) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
