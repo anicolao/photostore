@@ -1108,7 +1108,7 @@ const (
 	mapTileSize        = 256
 	mapFragmentWidth   = 520
 	mapFragmentHeight  = 260
-	mapFragmentZoom    = 13
+	mapFragmentZoom    = 15
 	mapTileCacheMaxAge = 7 * 24 * time.Hour
 )
 
@@ -1229,16 +1229,16 @@ func decodeMapTile(path string) (image.Image, error) {
 func drawMapMarker(img *image.RGBA, cx int, cy int) {
 	white := color.RGBA{R: 255, G: 255, B: 255, A: 235}
 	red := color.RGBA{R: 197, G: 34, B: 31, A: 255}
-	for y := -22; y <= 22; y++ {
-		for x := -22; x <= 22; x++ {
+	for y := -12; y <= 12; y++ {
+		for x := -12; x <= 12; x++ {
 			dist := math.Sqrt(float64(x*x + y*y))
-			if dist <= 22 {
+			if dist <= 12 {
 				img.Set(cx+x, cy+y, white)
 			}
-			if dist <= 14 {
+			if dist <= 7 {
 				img.Set(cx+x, cy+y, red)
 			}
-			if dist <= 5 {
+			if dist <= 3 {
 				img.Set(cx+x, cy+y, color.White)
 			}
 		}
