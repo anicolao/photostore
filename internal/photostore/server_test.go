@@ -192,6 +192,48 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	if !strings.Contains(nav.Next.ViewURL, "list=scan") || !strings.Contains(nav.Next.ViewURL, "scan_id="+*done.ResultRef) {
 		t.Fatalf("navigation next url = %q, want scan context", nav.Next.ViewURL)
 	}
+	var assets []AssetProjection
+	getJSON(t, ts.URL+"/api/assets", &assets)
+	if len(assets) != 1 {
+		t.Fatalf("assets = %d, want one unique content asset", len(assets))
+	}
+	if assets[0].Quality != "Unrated" || assets[0].Status != "Triage" || assets[0].Visibility != "Normal" {
+		t.Fatalf("asset defaults = quality %s status %s visibility %s", assets[0].Quality, assets[0].Status, assets[0].Visibility)
+	}
+	if assets[0].SourceOccurrenceCount != 2 {
+		t.Fatalf("asset source occurrences = %d, want 2", assets[0].SourceOccurrenceCount)
+	}
+	var detail AssetDetailProjection
+	getJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID, &detail)
+	if detail.AssetID != assets[0].AssetID || len(detail.Sources) != 2 {
+		t.Fatalf("asset detail = %#v, want matching asset with two sources", detail)
+	}
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/quality", map[string]string{"quality": "Best"}, http.StatusOK)
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/status", map[string]string{"status": "Reviewed"}, http.StatusOK)
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/visibility", map[string]string{"visibility": "Private"}, http.StatusOK)
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/labels", map[string]string{"label": "Family"}, http.StatusOK)
+	getJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID, &detail)
+	if detail.Quality != "Best" || detail.Status != "Reviewed" || detail.Visibility != "Private" {
+		t.Fatalf("asset triage = quality %s status %s visibility %s", detail.Quality, detail.Status, detail.Visibility)
+	}
+	if len(detail.Labels) != 1 || detail.Labels[0] != "Family" {
+		t.Fatalf("asset labels = %#v, want Family", detail.Labels)
+	}
+	var privateAssets []AssetProjection
+	getJSON(t, ts.URL+"/api/assets?quality=Best&status=Reviewed&visibility=Private&label=family", &privateAssets)
+	if len(privateAssets) != 1 || privateAssets[0].AssetID != assets[0].AssetID {
+		t.Fatalf("filtered assets = %#v, want triaged asset", privateAssets)
+	}
+	var labels []LabelProjection
+	getJSON(t, ts.URL+"/api/labels", &labels)
+	if len(labels) != 1 || labels[0].DisplayLabel != "Family" || labels[0].AssetCount != 1 {
+		t.Fatalf("labels = %#v, want Family count 1", labels)
+	}
+	deleteJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/labels", map[string]string{"label": "Family"}, http.StatusOK)
+	getJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID, &detail)
+	if len(detail.Labels) != 0 {
+		t.Fatalf("asset labels after delete = %#v, want none", detail.Labels)
+	}
 	var metadataSummary MetadataSummaryProjection
 	getJSON(t, ts.URL+"/api/metadata/summary", &metadataSummary)
 	if metadataSummary.FailedCount != 1 {
@@ -1023,6 +1065,27 @@ func postJSONInto(t *testing.T, url string, body any, wantStatus int, out any) {
 		if err := json.NewDecoder(res.Body).Decode(out); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func deleteJSON(t *testing.T, url string, body any, wantStatus int) {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodDelete, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != wantStatus {
+		t.Fatalf("DELETE %s status = %d, want %d", url, res.StatusCode, wantStatus)
 	}
 }
 

@@ -224,6 +224,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}", s.handlePhotoDays)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}/{month}/{day}", s.handleDatedPhotos)
 	s.mux.HandleFunc("GET /api/photos/undated", s.handleUndatedPhotos)
+	s.mux.HandleFunc("GET /api/assets", s.handleAssets)
+	s.mux.HandleFunc("GET /api/assets/{asset_id}", s.handleAsset)
+	s.mux.HandleFunc("GET /api/assets/{asset_id}/sources", s.handleAssetSources)
+	s.mux.HandleFunc("POST /api/assets/{asset_id}/quality", s.handleSetAssetQuality)
+	s.mux.HandleFunc("POST /api/assets/{asset_id}/status", s.handleSetAssetStatus)
+	s.mux.HandleFunc("POST /api/assets/{asset_id}/visibility", s.handleSetAssetVisibility)
+	s.mux.HandleFunc("POST /api/assets/{asset_id}/labels", s.handleApplyAssetLabel)
+	s.mux.HandleFunc("DELETE /api/assets/{asset_id}/labels", s.handleRemoveAssetLabel)
+	s.mux.HandleFunc("GET /api/labels", s.handleLabels)
 	s.mux.HandleFunc("GET /api/inventories", s.handleInventories)
 	s.mux.HandleFunc("POST /api/inventories/acquire", s.handleAcquireInventory)
 	s.mux.HandleFunc("POST /api/inventories/{historical_inventory_id}/scan", s.handleScanInventory)
@@ -409,6 +418,133 @@ func (s *Server) handleUndatedPhotos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
+	assets, err := s.store.Assets(r.URL.Query())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, assets)
+}
+
+func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
+	asset, err := s.store.Asset(r.PathValue("asset_id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, asset)
+}
+
+func (s *Server) handleAssetSources(w http.ResponseWriter, r *http.Request) {
+	sources, err := s.store.AssetSources(r.PathValue("asset_id"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sources)
+}
+
+func (s *Server) handleSetAssetQuality(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Quality string `json:"quality"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.SetAssetQuality(r.PathValue("asset_id"), req.Quality); err != nil {
+		writeAssetCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSetAssetStatus(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.SetAssetStatus(r.PathValue("asset_id"), req.Status); err != nil {
+		writeAssetCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleSetAssetVisibility(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Visibility string `json:"visibility"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.SetAssetVisibility(r.PathValue("asset_id"), req.Visibility); err != nil {
+		writeAssetCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleApplyAssetLabel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.ApplyAssetLabel(r.PathValue("asset_id"), req.Label); err != nil {
+		writeAssetCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleRemoveAssetLabel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label string `json:"label"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.RemoveAssetLabel(r.PathValue("asset_id"), req.Label); err != nil {
+		writeAssetCommandError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleLabels(w http.ResponseWriter, r *http.Request) {
+	labels, err := s.store.Labels()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, labels)
+}
+
+func writeAssetCommandError(w http.ResponseWriter, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		writeErrorStatus(w, http.StatusNotFound, err)
+		return
+	}
+	writeErrorStatus(w, http.StatusBadRequest, err)
 }
 
 func (s *Server) handleStoredObjectBytes(w http.ResponseWriter, r *http.Request) {

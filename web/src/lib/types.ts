@@ -83,6 +83,46 @@ export type DatedPhotoResponse = {
   photos: DatedPhoto[];
 };
 
+export type Asset = {
+  asset_id: string;
+  content_ref: string;
+  representative_stored_object_id: string;
+  filename: string;
+  quality: 'Unrated' | 'Best' | 'Good' | 'Poor';
+  status: 'Triage' | 'Reviewed';
+  visibility: 'Normal' | 'Private';
+  labels: string[];
+  capture_date?: string;
+  capture_time_local?: string;
+  camera?: string;
+  view_url: string;
+  bytes_url: string;
+  thumbnail_url: string;
+  source_occurrence_count: number;
+  created_at_ms: number;
+};
+
+export type AssetSource = {
+  source_occurrence_id: string;
+  stored_object_id: string;
+  source_kind: string;
+  source_root_id?: string;
+  path: string;
+  relative_path: string;
+  scan_id: string;
+};
+
+export type AssetDetail = Asset & {
+  sources: AssetSource[];
+};
+
+export type LabelSummary = {
+  normalized_label: string;
+  display_label: string;
+  asset_count: number;
+  last_applied_at_ms: number;
+};
+
 export type ObjectMetadata = {
   stored_object_id: string;
   content_ref: string;

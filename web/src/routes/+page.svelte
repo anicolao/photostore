@@ -336,6 +336,7 @@
       <p data-testid="store-path">{store?.store_path ?? 'Loading store'}</p>
     </div>
     <div class="topbar-actions">
+      <a class="button-link" data-testid="assets-link" href="/assets">Assets</a>
       <a class="button-link" data-testid="photos-by-date-link" href="/photos/dates">Photos by date</a>
       <a class="button-link" data-testid="metadata-link" href="/metadata">Metadata</a>
       <button data-testid="refresh-metadata" on:click={refreshMetadata} disabled={!hydrated || runningJobActive}>Refresh metadata</button>

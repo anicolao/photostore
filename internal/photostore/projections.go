@@ -147,6 +147,47 @@ type ObjectNavigationItem struct {
 	ViewURL        string `json:"view_url"`
 }
 
+type AssetProjection struct {
+	AssetID                string   `json:"asset_id"`
+	ContentRef             string   `json:"content_ref"`
+	RepresentativeObjectID string   `json:"representative_stored_object_id"`
+	Filename               string   `json:"filename"`
+	Quality                string   `json:"quality"`
+	Status                 string   `json:"status"`
+	Visibility             string   `json:"visibility"`
+	Labels                 []string `json:"labels"`
+	CaptureDate            string   `json:"capture_date,omitempty"`
+	CaptureTimeLocal       string   `json:"capture_time_local,omitempty"`
+	Camera                 string   `json:"camera,omitempty"`
+	ViewURL                string   `json:"view_url"`
+	BytesURL               string   `json:"bytes_url"`
+	ThumbnailURL           string   `json:"thumbnail_url"`
+	SourceOccurrenceCount  int      `json:"source_occurrence_count"`
+	CreatedAtMS            int64    `json:"created_at_ms"`
+}
+
+type AssetDetailProjection struct {
+	AssetProjection
+	Sources []AssetSourceProjection `json:"sources"`
+}
+
+type AssetSourceProjection struct {
+	SourceOccurrenceID string `json:"source_occurrence_id"`
+	StoredObjectID     string `json:"stored_object_id"`
+	SourceKind         string `json:"source_kind"`
+	SourceRootID       string `json:"source_root_id,omitempty"`
+	Path               string `json:"path"`
+	RelativePath       string `json:"relative_path"`
+	ScanID             string `json:"scan_id"`
+}
+
+type LabelProjection struct {
+	NormalizedLabel string `json:"normalized_label"`
+	DisplayLabel    string `json:"display_label"`
+	AssetCount      int    `json:"asset_count"`
+	LastAppliedAtMS int64  `json:"last_applied_at_ms"`
+}
+
 type DatedPhotoResponse struct {
 	BucketKey string                 `json:"bucket_key"`
 	Photos    []DatedPhotoProjection `json:"photos"`
@@ -700,6 +741,201 @@ func (s *Store) MetadataMissing() ([]MetadataPhotoProjection, error) {
 		photos = append(photos, photo)
 	}
 	return photos, rows.Err()
+}
+
+func (s *Store) Assets(query url.Values) ([]AssetProjection, error) {
+	where := []string{"1 = 1"}
+	args := []any{}
+	if assetID := query.Get("asset_id"); assetID != "" {
+		where = append(where, "a.asset_id = ?")
+		args = append(args, assetID)
+	}
+	if quality := query.Get("quality"); quality != "" {
+		where = append(where, "coalesce(aq.quality, 'Unrated') = ?")
+		args = append(args, quality)
+	}
+	if status := query.Get("status"); status != "" {
+		where = append(where, "coalesce(ast.status, 'Triage') = ?")
+		args = append(args, status)
+	}
+	if visibility := query.Get("visibility"); visibility != "" {
+		where = append(where, "coalesce(av.visibility, 'Normal') = ?")
+		args = append(args, visibility)
+	}
+	if label := query.Get("label"); label != "" {
+		where = append(where, `exists (
+			select 1 from asset_labels filter_label
+			where filter_label.asset_id = a.asset_id and filter_label.normalized_label = ?
+		)`)
+		args = append(args, normalizeAssetLabel(label))
+	}
+	rows, err := s.DB.Query(fmt.Sprintf(`
+		with capture as (
+			select content_ref, min(capture_date) as capture_date, min(capture_time_local) as capture_time_local
+			from photo_capture_times
+			group by content_ref
+		)
+		select a.asset_id,
+			a.content_ref,
+			a.representative_stored_object_id,
+			coalesce(a.original_filename, ''),
+			coalesce(aq.quality, 'Unrated'),
+			coalesce(ast.status, 'Triage'),
+			coalesce(av.visibility, 'Normal'),
+			coalesce(pct.capture_date, ''),
+			coalesce(pct.capture_time_local, ''),
+			coalesce(a.created_at_ms, 0),
+			(select count(*) from source_content_links scl where scl.content_ref = a.content_ref)
+		from assets a
+		left join asset_quality aq on aq.asset_id = a.asset_id
+		left join asset_status ast on ast.asset_id = a.asset_id
+		left join asset_visibility av on av.asset_id = a.asset_id
+		left join capture pct on pct.content_ref = a.content_ref
+		where %s
+		order by coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id`, strings.Join(where, " and ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	var assets []AssetProjection
+	for rows.Next() {
+		var asset AssetProjection
+		if err := rows.Scan(&asset.AssetID, &asset.ContentRef, &asset.RepresentativeObjectID, &asset.Filename, &asset.Quality, &asset.Status, &asset.Visibility, &asset.CaptureDate, &asset.CaptureTimeLocal, &asset.CreatedAtMS, &asset.SourceOccurrenceCount); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		assets = append(assets, asset)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range assets {
+		if err := s.hydrateAssetURLsAndLabels(&assets[i]); err != nil {
+			return nil, err
+		}
+		assets[i].Camera = s.cameraForContentRef(assets[i].ContentRef)
+	}
+	return assets, nil
+}
+
+func (s *Store) Asset(assetID string) (AssetDetailProjection, error) {
+	rows, err := s.Assets(url.Values{"asset_id": []string{assetID}})
+	if err != nil {
+		return AssetDetailProjection{}, err
+	}
+	if len(rows) == 0 {
+		return AssetDetailProjection{}, sql.ErrNoRows
+	}
+	sources, err := s.AssetSources(assetID)
+	if err != nil {
+		return AssetDetailProjection{}, err
+	}
+	return AssetDetailProjection{AssetProjection: rows[0], Sources: sources}, nil
+}
+
+func (s *Store) AssetSources(assetID string) ([]AssetSourceProjection, error) {
+	var contentRef string
+	if err := s.DB.QueryRow(`select content_ref from assets where asset_id = ?`, assetID).Scan(&contentRef); err != nil {
+		return nil, err
+	}
+	rows, err := s.DB.Query(`
+		select so.source_occurrence_id,
+			coalesce(so.stored_object_id, ''),
+			so.source_kind,
+			coalesce(so.source_root_id, ''),
+			so.path,
+			so.relative_path,
+			so.scan_id
+		from source_content_links scl
+		join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+		where scl.content_ref = ?
+		order by so.relative_path, so.path`, contentRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sources []AssetSourceProjection
+	for rows.Next() {
+		var source AssetSourceProjection
+		if err := rows.Scan(&source.SourceOccurrenceID, &source.StoredObjectID, &source.SourceKind, &source.SourceRootID, &source.Path, &source.RelativePath, &source.ScanID); err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	return sources, rows.Err()
+}
+
+func (s *Store) Labels() ([]LabelProjection, error) {
+	rows, err := s.DB.Query(`select normalized_label, display_label, asset_count, last_applied_at_ms from label_catalog order by display_label`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var labels []LabelProjection
+	for rows.Next() {
+		var label LabelProjection
+		if err := rows.Scan(&label.NormalizedLabel, &label.DisplayLabel, &label.AssetCount, &label.LastAppliedAtMS); err != nil {
+			return nil, err
+		}
+		labels = append(labels, label)
+	}
+	return labels, rows.Err()
+}
+
+func (s *Store) hydrateAssetURLsAndLabels(asset *AssetProjection) error {
+	asset.ViewURL = "/objects/" + asset.RepresentativeObjectID
+	asset.BytesURL = "/api/objects/" + asset.RepresentativeObjectID + "/bytes"
+	asset.ThumbnailURL = "/api/objects/" + asset.RepresentativeObjectID + "/thumbnail"
+	rows, err := s.DB.Query(`select display_label from asset_labels where asset_id = ? order by display_label`, asset.AssetID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return err
+		}
+		asset.Labels = append(asset.Labels, label)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if asset.Labels == nil {
+		asset.Labels = []string{}
+	}
+	return nil
+}
+
+func (s *Store) cameraForContentRef(contentRef string) string {
+	var fieldsJSON string
+	err := s.DB.QueryRow(`
+		select fields_json
+		from content_metadata
+		where content_ref = ? and extractor_name = ? and extractor_version = ?`,
+		contentRef, metadataExtractorName, metadataExtractorVersion,
+	).Scan(&fieldsJSON)
+	if err != nil {
+		return ""
+	}
+	var fields map[string]map[string]string
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		return ""
+	}
+	make := metadataRaw(fields, "make")
+	model := metadataRaw(fields, "model")
+	return strings.TrimSpace(strings.TrimSpace(make + " " + model))
+}
+
+func metadataRaw(fields map[string]map[string]string, key string) string {
+	field, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	return field["raw"]
 }
 
 func (s *Store) ObjectNavigation(storedObjectID string, query url.Values) (ObjectNavigationProjection, error) {

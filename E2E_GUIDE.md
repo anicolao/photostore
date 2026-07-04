@@ -82,7 +82,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  fullyParallel: true,
+  fullyParallel: false,
+  workers: 1,
   retries: 0,
   reporter: 'html',
   timeout: 60_000,
@@ -126,6 +127,10 @@ export default defineConfig({
   }
 });
 ```
+
+The MVP test server owns one deterministic local Photostore store for the whole
+browser run, so E2E scenarios must run serially. Do not raise `workers` above
+`1` unless the test server is changed to provide one isolated store per worker.
 
 If the implementation uses a separate Go API server during tests, the
 Playwright web server command should run a wrapper script that starts both:
