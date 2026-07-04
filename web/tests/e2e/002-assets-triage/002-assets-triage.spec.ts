@@ -90,6 +90,14 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
         await expect(page.getByTestId('asset-detail-image')).toBeVisible();
         await expect(page.getByTestId('asset-detail-image')).toHaveAttribute('src', /\/api\/objects\/.+\/bytes/);
       } },
+      { spec: 'Asset detail fits within the viewport without page overflow', check: async () => {
+        const overflow = await page.evaluate(() => ({
+          x: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          y: document.documentElement.scrollHeight - document.documentElement.clientHeight,
+        }));
+        expect(overflow.x).toBeLessThanOrEqual(0);
+        expect(overflow.y).toBeLessThanOrEqual(0);
+      } },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },
       { spec: 'Source provenance lists duplicate fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A_COPY.jpeg') },

@@ -214,12 +214,14 @@
 
 <style>
   main {
+    box-sizing: border-box;
     width: 100%;
-    min-height: 100vh;
+    height: 100dvh;
     padding: 14px;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     background: #f6f7f9;
+    overflow: hidden;
   }
 
   header {
@@ -278,9 +280,11 @@
     grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
     gap: 12px;
     min-height: 0;
+    overflow: hidden;
   }
 
   .photo-stage {
+    box-sizing: border-box;
     display: grid;
     place-items: center;
     margin: 0;
@@ -288,8 +292,7 @@
     border-radius: 8px;
     background: #111418;
     min-width: 0;
-    min-height: calc(100vh - 108px);
-    max-height: calc(100vh - 108px);
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -302,7 +305,6 @@
 
   .side-panel {
     min-height: 0;
-    max-height: calc(100vh - 108px);
     overflow: auto;
     display: grid;
     align-content: start;
@@ -408,6 +410,9 @@
 
   @media (max-width: 860px) {
     main {
+      height: auto;
+      min-height: 100dvh;
+      overflow: visible;
       padding: 10px;
     }
 
@@ -422,6 +427,7 @@
 
     .assessment {
       grid-template-columns: 1fr;
+      overflow: visible;
     }
 
     .photo-stage {
