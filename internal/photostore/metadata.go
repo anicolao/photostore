@@ -16,7 +16,7 @@ import (
 )
 
 const metadataExtractorName = "photostore-exif"
-const metadataExtractorVersion = 2
+const metadataExtractorVersion = 3
 
 type MetadataRefreshSummary struct {
 	RequestID string `json:"request_id"`

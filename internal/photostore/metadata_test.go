@@ -70,6 +70,9 @@ func TestScanExtractsMetadataOncePerContent(t *testing.T) {
 	if got := fields["exif_tag_1234"]["raw"]; got != "custom value" {
 		t.Fatalf("unknown EXIF tag raw = %q, want retained value", got)
 	}
+	if got := knownEXIFFieldName("gps", 0x0002); got != "gps_latitude" {
+		t.Fatalf("gps field name = %q, want gps_latitude", got)
+	}
 	if strings.Contains(fieldsJSON, "parsed") {
 		t.Fatalf("metadata event contains parsed reducer data: %s", fieldsJSON)
 	}
