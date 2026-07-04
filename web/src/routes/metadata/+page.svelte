@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getMetadataFailures, getMetadataMissing, getMetadataSummary } from '$lib/api';
+  import { objectURLWithContext } from '$lib/navigation';
   import type { MetadataPhoto, MetadataSummary } from '$lib/types';
 
   let summary: MetadataSummary | null = null;
@@ -126,7 +127,7 @@
     {:else}
       <div class="photo-list" data-testid="metadata-failures-list">
         {#each reviewFailures as photo}
-          <a class="photo-row" data-testid="metadata-failure" href={photo.view_url}>
+          <a class="photo-row" data-testid="metadata-failure" href={objectURLWithContext(photo.view_url, { list: 'metadata_failed' })}>
             <span class="thumb-wrap">
               <img src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
             </span>
@@ -151,7 +152,7 @@
           </summary>
           <div class="photo-list" data-testid="metadata-small-failures-list">
             {#each likelySmallFailures as photo}
-              <a class="photo-row" data-testid="metadata-small-failure" href={photo.view_url}>
+              <a class="photo-row" data-testid="metadata-small-failure" href={objectURLWithContext(photo.view_url, { list: 'metadata_failed' })}>
                 <span class="thumb-wrap">
                   <img src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
                 </span>
@@ -182,7 +183,7 @@
     {:else}
       <div class="photo-list" data-testid="metadata-missing-list">
         {#each missing as photo}
-          <a class="photo-row" data-testid="metadata-missing" href={photo.view_url}>
+          <a class="photo-row" data-testid="metadata-missing" href={objectURLWithContext(photo.view_url, { list: 'metadata_missing' })}>
             <span class="thumb-wrap">
               <img src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
             </span>

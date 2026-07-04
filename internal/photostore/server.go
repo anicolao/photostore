@@ -217,6 +217,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/bytes", s.handleStoredObjectBytes)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/thumbnail", s.handleStoredObjectThumbnail)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/metadata", s.handleStoredObjectMetadata)
+	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/navigation", s.handleStoredObjectNavigation)
 	s.mux.HandleFunc("GET /api/objects/{stored_object_id}/map.png", s.handleStoredObjectMap)
 	s.mux.HandleFunc("GET /api/photos/dates", s.handlePhotoYears)
 	s.mux.HandleFunc("GET /api/photos/dates/{year}", s.handlePhotoMonths)
@@ -460,6 +461,19 @@ func (s *Server) handleStoredObjectMetadata(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, metadata)
+}
+
+func (s *Server) handleStoredObjectNavigation(w http.ResponseWriter, r *http.Request) {
+	nav, err := s.store.ObjectNavigation(r.PathValue("stored_object_id"), r.URL.Query())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		writeErrorStatus(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, nav)
 }
 
 func (s *Server) handleStoredObjectMap(w http.ResponseWriter, r *http.Request) {

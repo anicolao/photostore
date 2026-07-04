@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { getAcquiredFiles, getReport } from '$lib/api';
+  import { objectURLWithContext } from '$lib/navigation';
   import type { AcquiredFile, ScanReport } from '$lib/types';
 
   let scanID = '';
@@ -66,7 +67,7 @@
       {:else}
         <div class="photo-grid" data-testid="photo-grid">
           {#each files as file}
-            <a class="photo-card" data-testid="photo-card" href={file.view_url}>
+            <a class="photo-card" data-testid="photo-card" href={objectURLWithContext(file.view_url, { list: 'scan', scan_id: scanID })}>
               <span class="thumb-wrap">
                 <img data-testid="thumbnail-image" src={file.thumbnail_url} alt={file.filename} loading="lazy">
               </span>

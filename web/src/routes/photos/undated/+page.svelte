@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getUndatedPhotos } from '$lib/api';
+  import { objectURLWithContext } from '$lib/navigation';
   import type { DatedPhoto, DatedPhotoResponse } from '$lib/types';
 
   let response: DatedPhotoResponse | null = null;
@@ -45,7 +46,7 @@
     <section>
       <div class="photo-grid" data-testid="undated-photo-grid">
         {#each response?.photos ?? [] as photo}
-          <a class="photo-card" data-testid="undated-photo-card" href={photo.view_url}>
+          <a class="photo-card" data-testid="undated-photo-card" href={objectURLWithContext(photo.view_url, { list: 'undated' })}>
             <span class="thumb-wrap">
               <img data-testid="undated-thumbnail-image" src={photo.thumbnail_url} alt={photo.filename} loading="lazy">
             </span>

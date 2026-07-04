@@ -92,6 +92,20 @@ export type ObjectMetadata = {
   fields: Record<string, Record<string, string>>;
 };
 
+export type ObjectNavigationItem = {
+  stored_object_id: string;
+  filename: string;
+  view_url: string;
+};
+
+export type ObjectNavigation = {
+  list: string;
+  label: string;
+  current: ObjectNavigationItem;
+  previous: ObjectNavigationItem | null;
+  next: ObjectNavigationItem | null;
+};
+
 export type MetadataSummary = {
   content_count: number;
   extracted_count: number;
