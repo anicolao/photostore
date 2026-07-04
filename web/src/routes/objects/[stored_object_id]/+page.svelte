@@ -10,7 +10,7 @@
   let infoOpen = false;
 
   $: bytesURL = storedObjectID ? `/api/objects/${storedObjectID}/bytes` : '';
-  $: mapURL = storedObjectID ? `/api/objects/${storedObjectID}/map.svg` : '';
+  $: mapURL = storedObjectID ? `/api/objects/${storedObjectID}/map.png` : '';
   $: fields = metadata ? Object.entries(metadata.fields).toSorted(([a], [b]) => a.localeCompare(b)) : [];
   $: camera = metadata ? cameraLabel(metadata.fields) : '';
   $: takenAt = metadata ? captureDateLabel(metadata.fields) : '';
@@ -148,6 +148,9 @@
             <a href={googleMapsURL(coordinates)} target="_blank" rel="noreferrer">
               <img class="map" data-testid="photo-map" src={mapURL} alt="Map fragment for {location}">
             </a>
+            <p class="map-attribution">
+              <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors
+            </p>
           </section>
         {/if}
         <details class="debug-exif" data-testid="raw-exif">
@@ -312,6 +315,18 @@
     height: 220px;
     width: 100%;
     object-fit: cover;
+  }
+
+  .map-attribution {
+    margin: 0;
+    padding: 6px 8px;
+    background: #ffffff;
+    color: #5f6368;
+    font-size: 12px;
+  }
+
+  .map-attribution a {
+    color: #185abc;
   }
 
   .debug-exif {

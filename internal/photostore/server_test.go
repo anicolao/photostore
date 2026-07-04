@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -53,17 +54,39 @@ func TestGPSCoordinatesFromMetadata(t *testing.T) {
 	}
 }
 
-func TestMapFragmentSVG(t *testing.T) {
-	svg := mapFragmentSVG(45.126019, -79.639786)
-	for _, want := range []string{
-		`<svg xmlns="http://www.w3.org/2000/svg"`,
-		`Map fragment centered on 45.126019, -79.639786`,
-		`45.126019, -79.639786`,
-		`79.7798°W`,
-	} {
-		if !strings.Contains(svg, want) {
-			t.Fatalf("map SVG missing %q:\n%s", want, svg)
+func TestMapFragmentUsesCachedTiles(t *testing.T) {
+	var requests int
+	tileServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "image/png")
+		if err := png.Encode(w, solidTile(color.RGBA{R: 216, G: 238, B: 247, A: 255})); err != nil {
+			t.Fatal(err)
 		}
+	}))
+	defer tileServer.Close()
+	t.Setenv("PHOTOSTORE_MAP_TILE_URL_TEMPLATE", tileServer.URL+"/{z}/{x}/{y}.png")
+
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	img, err := st.renderMapFragment(45.126019, -79.639786)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := img.Bounds().Size(); got.X != mapFragmentWidth || got.Y != mapFragmentHeight {
+		t.Fatalf("map size = %dx%d, want %dx%d", got.X, got.Y, mapFragmentWidth, mapFragmentHeight)
+	}
+	firstRequests := requests
+	if firstRequests == 0 {
+		t.Fatal("map render did not request tiles")
+	}
+	if _, err := st.renderMapFragment(45.126019, -79.639786); err != nil {
+		t.Fatal(err)
+	}
+	if requests != firstRequests {
+		t.Fatalf("second map render requested %d additional tiles, want cached", requests-firstRequests)
 	}
 }
 
@@ -1017,4 +1040,14 @@ func waitJob(t *testing.T, baseURL, id string) Job {
 	}
 	t.Fatalf("timed out waiting for job %s", id)
 	return Job{}
+}
+
+func solidTile(c color.RGBA) image.Image {
+	img := image.NewRGBA(image.Rect(0, 0, mapTileSize, mapTileSize))
+	for y := 0; y < mapTileSize; y++ {
+		for x := 0; x < mapTileSize; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	return img
 }
