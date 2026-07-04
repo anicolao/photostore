@@ -24,6 +24,11 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     [0xa002, '2000'],
     [0xa003, '1000']
   ]);
+  const triagePortrait = jpegWithEXIF(fixtureJPEG, [
+    [0x9003, '2020:10:24 13:14:15'],
+    [0xa002, '1000'],
+    [0xa003, '2000']
+  ]);
   const triageSmall = jpegWithEXIF(fixtureJPEG, [
     [0x9003, '2019:09:23 12:13:14'],
     [0xa002, '640'],
@@ -32,6 +37,7 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
   writeFileSync(`${source}/TRIAGE_A.JPG`, triageA);
   writeFileSync(`${source}/TRIAGE_A_COPY.jpeg`, triageA);
   writeFileSync(`${source}/TRIAGE_B.JPG`, triageB);
+  writeFileSync(`${source}/TRIAGE_PORTRAIT.JPG`, triagePortrait);
   writeFileSync(`${source}/TRIAGE_SMALL.JPG`, triageSmall);
   writeFileSync(`${source}/TRIAGE_NODATE.JPG`, fixtureJPEG);
 
@@ -77,6 +83,7 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
       { spec: 'Date ascending sort is active by default', check: async () => await expect(page.getByTestId('sort-filter-date_asc')).toHaveClass(/active/) },
       { spec: 'Large dated triage item A is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') },
       { spec: 'Large dated triage item B is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_B.JPG') },
+      { spec: 'Large dated portrait item is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_PORTRAIT.JPG') },
       { spec: 'Small dated item is excluded', check: async () => await expect(page.getByTestId('asset-grid')).not.toContainText('TRIAGE_SMALL.JPG') },
       { spec: 'No-date item is excluded', check: async () => await expect(page.getByTestId('asset-grid')).not.toContainText('TRIAGE_NODATE.JPG') }
     ]
@@ -115,9 +122,12 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
       { spec: 'Nearby asset thumbnail strip highlights the current asset', check: async () => {
         await expect(page.getByTestId('asset-context-strip')).toBeVisible();
         await expect(page.getByTestId('asset-strip-current')).toBeVisible();
-        await expect(page.getByTestId('asset-strip-link')).toHaveCount(1);
-        await expect(page.getByTestId('asset-strip-link')).toHaveAttribute('href', /\/assets\/asset_.+has_date=1.+min_megapixels=1/);
-        await expect(page.getByTestId('asset-context-strip').locator('img')).toHaveCount(2);
+        await expect(page.getByTestId('asset-strip-current')).toHaveClass(/quality-unrated/);
+        await expect(page.getByTestId('asset-strip-current')).toHaveAttribute('style', /aspect-ratio:\s*2000 \/ 1000/);
+        await expect(page.getByTestId('asset-strip-link')).toHaveCount(2);
+        await expect(page.getByTestId('asset-strip-link').first()).toHaveAttribute('href', /\/assets\/asset_.+has_date=1.+min_megapixels=1/);
+        await expect(page.getByTestId('asset-strip-link').last()).toHaveAttribute('style', /aspect-ratio:\s*1000 \/ 2000/);
+        await expect(page.getByTestId('asset-context-strip').locator('img')).toHaveCount(3);
       } },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },
@@ -133,6 +143,7 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     verifications: [
       { spec: 'The detail view advanced to TRIAGE_B.JPG', check: async () => await expect(page.getByRole('heading', { name: 'TRIAGE_B.JPG' })).toBeVisible() },
       { spec: 'The reviewed asset left the Triage navigation queue', check: async () => await expect(page.getByTestId('asset-prev')).toHaveClass(/disabled/) },
+      { spec: 'Advance preserved an unrated queue', check: async () => await expect(page).toHaveURL(/quality=Unrated/) },
       { spec: 'The next asset remains in Triage', check: async () => await expect(page.getByTestId('status-Triage')).toHaveClass(/active/) }
     ]
   });

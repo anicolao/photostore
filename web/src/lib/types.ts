@@ -124,8 +124,11 @@ export type AssetSource = {
 export type AssetNavigationItem = {
   asset_id: string;
   filename: string;
+  quality: Asset['quality'];
   view_url: string;
   thumbnail_url: string;
+  width?: number;
+  height?: number;
 };
 
 export type AssetNavigation = {

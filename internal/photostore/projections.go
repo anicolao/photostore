@@ -236,8 +236,11 @@ type AssetNavigationProjection struct {
 type AssetNavigationItem struct {
 	AssetID      string `json:"asset_id"`
 	Filename     string `json:"filename"`
+	Quality      string `json:"quality"`
 	ViewURL      string `json:"view_url"`
 	ThumbnailURL string `json:"thumbnail_url"`
+	Width        int    `json:"width,omitempty"`
+	Height       int    `json:"height,omitempty"`
 }
 
 type LabelProjection struct {
@@ -1026,7 +1029,12 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 	parts := assetQueryParts(nextQuery)
 	rows, err := s.DB.Query(fmt.Sprintf(`
 		%s
-		select a.asset_id, coalesce(a.original_filename, ''), a.representative_stored_object_id
+		select a.asset_id,
+			coalesce(a.original_filename, ''),
+			coalesce(aq.quality, 'Unrated'),
+			a.representative_stored_object_id,
+			coalesce(cast(json_extract(cm.fields_json, '$.pixel_x_dimension.raw') as integer), 0),
+			coalesce(cast(json_extract(cm.fields_json, '$.pixel_y_dimension.raw') as integer), 0)
 		%s
 		where %s
 		order by %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), parts.Args...)
@@ -1038,7 +1046,7 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 	for rows.Next() {
 		var item AssetNavigationItem
 		var representativeObjectID string
-		if err := rows.Scan(&item.AssetID, &item.Filename, &representativeObjectID); err != nil {
+		if err := rows.Scan(&item.AssetID, &item.Filename, &item.Quality, &representativeObjectID, &item.Width, &item.Height); err != nil {
 			return AssetNavigationProjection{}, err
 		}
 		item.ThumbnailURL = "/api/objects/" + representativeObjectID + "/thumbnail"

@@ -302,6 +302,9 @@ func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
 	if nav.Current.ThumbnailURL == "" || nav.Window[0].ThumbnailURL == "" || nav.Window[1].ThumbnailURL == "" {
 		t.Fatalf("navigation thumbnails missing: %#v", nav)
 	}
+	if nav.Current.Quality != "Unrated" || nav.Window[0].Width != 2000 || nav.Window[0].Height != 1000 {
+		t.Fatalf("navigation item metadata = %#v, want unrated 2000x1000", nav.Window[0])
+	}
 }
 
 func TestInitExistingStoreDoesNotAppendDuplicateInitializedEvent(t *testing.T) {

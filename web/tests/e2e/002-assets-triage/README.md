@@ -37,6 +37,7 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 - [x] Date ascending sort is active by default
 - [x] Large dated triage item A is visible
 - [x] Large dated triage item B is visible
+- [x] Large dated portrait item is visible
 - [x] Small dated item is excluded
 - [x] No-date item is excluded
 
@@ -66,6 +67,7 @@ Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, 
 **Verifications:**
 - [x] The detail view advanced to TRIAGE_B.JPG
 - [x] The reviewed asset left the Triage navigation queue
+- [x] Advance preserved an unrated queue
 - [x] The next asset remains in Triage
 
 ---

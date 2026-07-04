@@ -54,9 +54,14 @@
     saving = true;
     error = '';
     try {
+      let advanceURL = '';
+      if (options.advance && advanceToNext) {
+        const unratedNavigation = await loadNavigation(unratedNavigationParams($page.url.searchParams));
+        advanceURL = unratedNavigation?.next?.view_url ?? '';
+      }
       await fn();
-      if (options.advance && advanceToNext && navigation?.next) {
-        await goto(navigation.next.view_url);
+      if (advanceURL) {
+        await goto(advanceURL);
         return;
       }
       const params = new URLSearchParams($page.url.searchParams);
@@ -97,6 +102,26 @@
     }
     return out;
   }
+
+  function unratedNavigationParams(params: URLSearchParams) {
+    const out = new URLSearchParams();
+    for (const key of ['status', 'visibility', 'label', 'has_date', 'min_megapixels', 'sort']) {
+      for (const value of params.getAll(key)) {
+        if (value) out.append(key, value);
+      }
+    }
+    out.append('quality', 'Unrated');
+    return out;
+  }
+
+  function stripAspectRatio(item: AssetNavigation['window'][number]) {
+    if (item.width && item.height) return `${item.width} / ${item.height}`;
+    return '4 / 3';
+  }
+
+  function stripQualityClass(item: AssetNavigation['window'][number]) {
+    return `quality-${item.quality.toLowerCase()}`;
+  }
 </script>
 
 <svelte:head>
@@ -124,10 +149,12 @@
         {#each navigation.window as item}
           <a
             class:current={item.asset_id === assetID}
+            class={stripQualityClass(item)}
             data-testid={item.asset_id === assetID ? 'asset-strip-current' : 'asset-strip-link'}
             href={item.view_url}
             title={item.filename}
             aria-current={item.asset_id === assetID ? 'true' : undefined}
+            style={`aspect-ratio: ${stripAspectRatio(item)};`}
           >
             <img src={item.thumbnail_url} alt={item.filename}>
           </a>
@@ -278,9 +305,9 @@
   }
 
   .context-strip {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, 64px);
+    display: flex;
     justify-content: center;
+    align-items: center;
     gap: 8px;
     min-width: 0;
     overflow: hidden;
@@ -288,19 +315,36 @@
 
   .context-strip a {
     box-sizing: border-box;
-    width: 64px;
-    height: 48px;
-    border: 2px solid transparent;
+    height: 52px;
+    min-width: 34px;
+    max-width: 92px;
+    border: 3px solid #9aa0a6;
     border-radius: 6px;
     background: #111418;
     display: grid;
     place-items: center;
     overflow: hidden;
+    position: relative;
   }
 
   .context-strip a.current {
-    border-color: #1a73e8;
-    box-shadow: 0 0 0 2px #ffffff, 0 0 0 4px #1a73e8;
+    box-shadow: 0 0 0 2px #ffffff, 0 0 0 5px #1a73e8;
+  }
+
+  .context-strip a.quality-unrated {
+    border-color: #9aa0a6;
+  }
+
+  .context-strip a.quality-best {
+    border-color: #c99700;
+  }
+
+  .context-strip a.quality-good {
+    border-color: #188038;
+  }
+
+  .context-strip a.quality-poor {
+    border-color: #202124;
   }
 
   .context-strip img {
