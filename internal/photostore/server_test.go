@@ -34,6 +34,39 @@ func TestCloneJobSerializesEmptyProgressArray(t *testing.T) {
 	}
 }
 
+func TestGPSCoordinatesFromMetadata(t *testing.T) {
+	fields := map[string]map[string]string{
+		"gps_latitude":      {"raw": "45/1,7/1,3367/100"},
+		"gps_latitude_ref":  {"raw": "N"},
+		"gps_longitude":     {"raw": "79/1,38/1,2323/100"},
+		"gps_longitude_ref": {"raw": "W"},
+	}
+	coords, ok := gpsCoordinatesFromMetadata(fields)
+	if !ok {
+		t.Fatal("GPS coordinates were not parsed")
+	}
+	if got, want := fmt.Sprintf("%.6f", coords.Lat), "45.126019"; got != want {
+		t.Fatalf("latitude = %s, want %s", got, want)
+	}
+	if got, want := fmt.Sprintf("%.6f", coords.Lon), "-79.639786"; got != want {
+		t.Fatalf("longitude = %s, want %s", got, want)
+	}
+}
+
+func TestMapFragmentSVG(t *testing.T) {
+	svg := mapFragmentSVG(45.126019, -79.639786)
+	for _, want := range []string{
+		`<svg xmlns="http://www.w3.org/2000/svg"`,
+		`Map fragment centered on 45.126019, -79.639786`,
+		`45.126019, -79.639786`,
+		`79.7798°W`,
+	} {
+		if !strings.Contains(svg, want) {
+			t.Fatalf("map SVG missing %q:\n%s", want, svg)
+		}
+	}
+}
+
 func TestServerPrunesOnlyOldCompletedJobs(t *testing.T) {
 	st, err := Init(filepath.Join(t.TempDir(), "store"))
 	if err != nil {
