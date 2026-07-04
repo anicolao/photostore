@@ -270,7 +270,7 @@ The system should track independent label dimensions.
 Suggested dimensions:
 
 ```text
-quality:    Unrated | Best | Good | Rejected
+quality:    Unrated | Best | Good | Poor
 kind:       Photo | Video | RAW | Document | Scan | Screenshot | Other
 visibility: Normal | Private | Hidden
 status:     Triage | Reviewed | NeedsMetadata | NeedsEdit

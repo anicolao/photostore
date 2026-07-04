@@ -25,7 +25,7 @@ The system should be suitable for large personal and family archives.
 
 Incoming assets should enter a triage flow where they can be classified with minimal effort. Triage uses independent dimensions:
 
-- Quality: `Best`, `Good`, `Rejected`, `Unrated`
+- Quality: `Best`, `Good`, `Poor`, `Unrated`
 - Media kind: `Photo`, `Video`, `RAW`, `Document`, `Scan`, `Screenshot`, `Other`
 - Visibility: `Normal`, `Private`, `Hidden`
 - Purpose or tags: `Documentary`, `Receipt`, `Family`, `Travel`, user-defined tags, and other labels

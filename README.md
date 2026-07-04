@@ -35,6 +35,7 @@ Photostore is intended to support:
 - [MVP_IMPLEMENTATION_PLAN.md](./MVP_IMPLEMENTATION_PLAN.md) describes the first ingestion implementation slice.
 - [MVP_USAGE.md](./MVP_USAGE.md) describes how to run the first ingestion MVP.
 - [MVP_UI_DESIGN.md](./MVP_UI_DESIGN.md) describes the first local web interface for ingestion.
+- [MVP_TRIAGE_DESIGN.md](./MVP_TRIAGE_DESIGN.md) describes the first asset-scoped triage implementation slice.
 - [E2E_GUIDE.md](./E2E_GUIDE.md) describes the Playwright testing strategy for the web interface.
 
 ## Architectural Direction
