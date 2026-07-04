@@ -816,12 +816,6 @@ func (s *Store) initSchema() error {
 	if err := s.ensureProjectionStateColumns(); err != nil {
 		return err
 	}
-	if err := s.rebuildPhotoCaptureTimeProjection(); err != nil {
-		return err
-	}
-	if err := s.rebuildDuplicateDeduplicationProjection(); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -974,6 +968,27 @@ func (s *Store) appendPreparedEventLocked(ev Event) error {
 	return s.applyEventAt(ev, nextOffset)
 }
 
+func (s *Store) appendPreparedEventsLocked(events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	nextOffsets, err := s.writeEvents(events)
+	if err != nil {
+		return err
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, ev := range events {
+		if err := applyEventInTx(tx, ev, nextOffsets[i], true); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func hostname() string {
 	name, err := os.Hostname()
 	if err != nil {
@@ -997,20 +1012,38 @@ func (s *Store) withEventLogLock(fn func() error) error {
 }
 
 func (s *Store) writeEvent(ev Event) error {
+	_, err := s.writeEvents([]Event{ev})
+	return err
+}
+
+func (s *Store) writeEvents(events []Event) ([]int64, error) {
 	path := filepath.Join(s.Root, "events", "events.jsonl")
+	offset, err := s.eventLogSize()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
-	b, err := json.Marshal(ev)
-	if err != nil {
-		return err
+	nextOffsets := make([]int64, 0, len(events))
+	for _, ev := range events {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return nil, err
+		}
+		line := append(b, '\n')
+		if _, err := f.Write(line); err != nil {
+			return nil, err
+		}
+		offset += int64(len(line))
+		nextOffsets = append(nextOffsets, offset)
 	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return err
+	if err := f.Sync(); err != nil {
+		return nil, err
 	}
-	return f.Sync()
+	return nextOffsets, nil
 }
 
 func (s *Store) replayUnappliedEvents() error {
@@ -1043,16 +1076,26 @@ func (s *Store) replayUnappliedEventsLocked() error {
 	}
 	offset := cursor.NextOffset
 	r := bufio.NewReaderSize(f, 1024*1024)
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	appliedCount, err := eventsAppliedCount(tx)
+	if err != nil {
+		return err
+	}
+	skipAppliedCheck := cursor.NextOffset == 0 && appliedCount == 0
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return err
 		}
 		if err == io.EOF && line == "" {
-			return nil
+			return tx.Commit()
 		}
 		if err == io.EOF && !strings.HasSuffix(line, "\n") {
-			return nil
+			return tx.Commit()
 		}
 		nextOffset := offset + int64(len(line))
 		offset = nextOffset
@@ -1064,7 +1107,7 @@ func (s *Store) replayUnappliedEventsLocked() error {
 		if err := json.Unmarshal([]byte(trimmed), &ev); err != nil {
 			return err
 		}
-		if err := s.applyEventAt(ev, nextOffset); err != nil {
+		if err := applyEventInTx(tx, ev, nextOffset, skipAppliedCheck); err != nil {
 			return err
 		}
 	}
@@ -1109,25 +1152,43 @@ func (s *Store) applyEvent(ev Event) error {
 }
 
 func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
-	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var applied int
-	if err := tx.QueryRow(`select count(*) from events_applied where event_id = ?`, ev.EventID).Scan(&applied); err != nil {
+	if err := applyEventInTx(tx, ev, nextOffset, false); err != nil {
 		return err
 	}
-	if applied > 0 {
-		if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
+	return tx.Commit()
+}
+
+func eventsAppliedCount(tx *sql.Tx) (int, error) {
+	var count int
+	if err := tx.QueryRow(`select count(*) from events_applied`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func applyEventInTx(tx *sql.Tx, ev Event, nextOffset int64, skipAppliedCheck bool) error {
+	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
+	if !skipAppliedCheck {
+		var applied int
+		if err := tx.QueryRow(`select count(*) from events_applied where event_id = ?`, ev.EventID).Scan(&applied); err != nil {
 			return err
 		}
-		return tx.Commit()
+		if applied > 0 {
+			if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
+				return err
+			}
+			return nil
+		}
 	}
 	if _, err := tx.Exec(`insert into events_applied(event_id,event_type,recorded_at_ms) values(?,?,?)`, ev.EventID, ev.EventType, ev.RecordedAtMS); err != nil {
 		return err
 	}
+	var err error
 	switch ev.EventType {
 	case "SourceRootRegistered":
 		_, err = tx.Exec(`insert or ignore into source_roots values(?,?,?,?,?)`, str(ev.Payload["source_root_id"]), str(ev.Payload["root_path"]), str(ev.Payload["label"]), str(ev.Payload["source_type"]), pj("scan_policy"))
@@ -1237,7 +1298,7 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 	if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func advanceProjectionCursor(tx *sql.Tx, ev Event, nextOffset int64) error {
@@ -1516,17 +1577,15 @@ func (s *Store) drainAssetCreationRequired() error {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
 	return s.withEventLogLock(func() error {
-		for {
-			pending, ok, err := s.nextAssetCreationRequired()
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return nil
-			}
+		pendingRows, err := s.assetCreationRequiredRows()
+		if err != nil {
+			return err
+		}
+		events := make([]Event, 0, len(pendingRows))
+		for _, pending := range pendingRows {
 			causationID := pending.RequiredEventID
 			correlationID := pending.ScanID
-			ev := newEvent("AssetCreated", &causationID, &correlationID, map[string]any{
+			events = append(events, newEvent("AssetCreated", &causationID, &correlationID, map[string]any{
 				"scan_id":     pending.ScanID,
 				"asset_id":    newID("asset"),
 				"content_ref": pending.ContentRef,
@@ -1545,28 +1604,30 @@ func (s *Store) drainAssetCreationRequired() error {
 					"type":     "ContentAddressMaterialized",
 					"event_id": pending.RequiredEventID,
 				},
-			})
-			if err := s.appendPreparedEventLocked(ev); err != nil {
-				return err
-			}
+			}))
 		}
+		return s.appendPreparedEventsLocked(events)
 	})
 }
 
-func (s *Store) nextAssetCreationRequired() (pendingAssetCreation, bool, error) {
-	var pending pendingAssetCreation
-	err := s.DB.QueryRow(`
+func (s *Store) assetCreationRequiredRows() ([]pendingAssetCreation, error) {
+	rows, err := s.DB.Query(`
 		select content_ref, stored_object_id, source_occurrence_id, scan_id, required_event_id
 		from asset_creation_required
-		order by required_at_ms, required_event_id
-		limit 1`).Scan(&pending.ContentRef, &pending.StoredObjectID, &pending.SourceOccurrenceID, &pending.ScanID, &pending.RequiredEventID)
+		order by required_at_ms, required_event_id`)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return pendingAssetCreation{}, false, nil
-		}
-		return pendingAssetCreation{}, false, err
+		return nil, err
 	}
-	return pending, true, nil
+	defer rows.Close()
+	var pendingRows []pendingAssetCreation
+	for rows.Next() {
+		var pending pendingAssetCreation
+		if err := rows.Scan(&pending.ContentRef, &pending.StoredObjectID, &pending.SourceOccurrenceID, &pending.ScanID, &pending.RequiredEventID); err != nil {
+			return nil, err
+		}
+		pendingRows = append(pendingRows, pending)
+	}
+	return pendingRows, rows.Err()
 }
 
 func (s *Store) contentAddressExists(ref string) bool {
