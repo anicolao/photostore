@@ -51,6 +51,16 @@ func TestScanSourcesAcquiresOnlyJPEGs(t *testing.T) {
 	if !st.contentAddressExists(ref) {
 		t.Fatalf("expected CAS object for %s", ref)
 	}
+	if got := assetCreationRequiredCount(t, st); got != 0 {
+		t.Fatalf("asset_creation_required rows after scan = %d, want 0", got)
+	}
+	var assetEvents int
+	if err := st.DB.QueryRow(`select count(*) from events_applied where event_type = 'AssetCreated'`).Scan(&assetEvents); err != nil {
+		t.Fatal(err)
+	}
+	if assetEvents != 1 {
+		t.Fatalf("AssetCreated events = %d, want 1", assetEvents)
+	}
 }
 
 func TestInitExistingStoreDoesNotAppendDuplicateInitializedEvent(t *testing.T) {
@@ -206,6 +216,77 @@ func TestOpenWithoutProjectionCursorReplaysWholeLogToRepairOlderHoles(t *testing
 	assertProjectionOffsetAtLogEnd(t, st)
 }
 
+func TestOpenDrainsAssetCreationRequiredProjection(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanID := "scan_asset_required"
+	occID := "occ_asset_required"
+	objID := "obj_asset_required"
+	ref := contentRef(sha([]byte("asset-required")), int64(len("asset-required")))
+	if err := st.appendEvent("SourceFileAcquired", nil, &scanID, map[string]any{
+		"scan_id":                 scanID,
+		"source_occurrence_id":    occID,
+		"stored_object_id":        objID,
+		"purpose":                 "source_media",
+		"source_kind":             "source_root",
+		"source_root_id":          "src_asset_required",
+		"path":                    filepath.Join(root, "IMG.JPG"),
+		"relative_path":           "IMG.JPG",
+		"historical_inventory_id": nil,
+		"inventory_entry_id":      nil,
+		"acquired_storage_key":    "objects/acquired/" + objID,
+		"source_file":             map[string]any{},
+		"copy_result": map[string]any{
+			"bytes_copied":   int64(len("asset-required")),
+			"hash_algorithm": "sha256",
+			"hash":           sha([]byte("asset-required")),
+		},
+		"storage_disposition": map[string]any{
+			"cas_existed_at_ingest":    false,
+			"acquired_object_retained": true,
+			"temporary_copy_discarded": false,
+		},
+		"content_ref": ref,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	materializedEventID, err := st.appendEventReturnID("ContentAddressMaterialized", nil, nil, map[string]any{
+		"stored_object_id": objID,
+		"content_ref":      ref,
+		"materialization":  map[string]any{"method": "hard_link", "created": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := assetCreationRequiredCount(t, st); got != 1 {
+		t.Fatalf("asset_creation_required rows before reopen = %d, want 1", got)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if got := assetCreationRequiredCount(t, st); got != 0 {
+		t.Fatalf("asset_creation_required rows after reopen = %d, want 0", got)
+	}
+	var assetID string
+	if err := st.DB.QueryRow(`select asset_id from assets where content_ref = ?`, ref).Scan(&assetID); err != nil {
+		t.Fatal(err)
+	}
+	assetEvent := latestEventOfType(t, st, "AssetCreated")
+	if assetEvent.CausationID == nil || *assetEvent.CausationID != materializedEventID {
+		t.Fatalf("AssetCreated causation = %v, want %s", assetEvent.CausationID, materializedEventID)
+	}
+}
+
 func TestConcurrentStoreHandlesSerializeEventLogCursor(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
@@ -247,6 +328,15 @@ func TestConcurrentStoreHandlesSerializeEventLogCursor(t *testing.T) {
 	if sources != 20 {
 		t.Fatalf("source roots = %d, want 20", sources)
 	}
+}
+
+func assetCreationRequiredCount(t *testing.T, st *Store) int {
+	t.Helper()
+	var count int
+	if err := st.DB.QueryRow(`select count(*) from asset_creation_required`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
 
 func assertProjectionOffsetAtLogEnd(t *testing.T, st *Store) {

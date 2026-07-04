@@ -172,6 +172,10 @@ func Open(root string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := st.drainAssetCreationRequired(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return st, nil
 }
 
@@ -337,6 +341,10 @@ func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, 
 		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
+	if err := s.drainAssetCreationRequired(); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
+		return "", err
+	}
 	if err := s.writeReport(report); err != nil {
 		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
@@ -409,6 +417,10 @@ func (s *Store) ScanSourceRootsWithOptions(sourceRootIDs []string, progress Prog
 	}
 	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
 	if err := s.scanSourceRootFiles(scanID, roots, nil, report, progress, opts); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
+		return "", err
+	}
+	if err := s.drainAssetCreationRequired(); err != nil {
 		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
@@ -737,6 +749,9 @@ func (s *Store) ScanInventoryWithProgress(invID, invType string, exts []string, 
 			report.SourceFileAcquireFailures++
 		}
 	}
+	if err := s.drainAssetCreationRequired(); err != nil {
+		return "", err
+	}
 	if err := s.writeReport(report); err != nil {
 		return "", err
 	}
@@ -772,6 +787,7 @@ func (s *Store) initSchema() error {
 		`create table if not exists historical_matches(content_ref text, stored_object_id text, historical_inventory_id text, inventory_entry_id text)`,
 		`create table if not exists historical_seen_links(source_occurrence_id text primary key, historical_inventory_id text, inventory_entry_id text, content_ref text, link_event_id text)`,
 		`create table if not exists asset_projection(asset_projection_id text primary key, content_ref text unique, representative_stored_object_id text, asset_kind text)`,
+		`create table if not exists asset_creation_required(content_ref text primary key, stored_object_id text, source_occurrence_id text, scan_id text, required_event_id text, required_at_ms integer)`,
 		`create table if not exists assets(asset_id text primary key, content_ref text unique, representative_stored_object_id text, original_filename text, first_source_occurrence_id text, first_scan_id text, created_event_id text, created_at_ms integer)`,
 		`create table if not exists asset_versions(asset_version_id text primary key, asset_id text, role text, stored_object_id text, content_ref text, source_occurrence_id text)`,
 		`create table if not exists asset_quality(asset_id text primary key, quality text, set_event_id text, set_at_ms integer)`,
@@ -847,7 +863,17 @@ func (s *Store) appendEvent(eventType string, causationID *string, correlationID
 func (s *Store) appendEventReturnID(eventType string, causationID *string, correlationID *string, payload map[string]any) (string, error) {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
-	ev := Event{
+	ev := newEvent(eventType, causationID, correlationID, payload)
+	if err := s.withEventLogLock(func() error {
+		return s.appendPreparedEventLocked(ev)
+	}); err != nil {
+		return "", err
+	}
+	return ev.EventID, nil
+}
+
+func newEvent(eventType string, causationID *string, correlationID *string, payload map[string]any) Event {
+	return Event{
 		EventID:       newID("evt"),
 		EventType:     eventType,
 		SchemaVersion: schemaVersion,
@@ -862,19 +888,17 @@ func (s *Store) appendEventReturnID(eventType string, causationID *string, corre
 		CorrelationID: correlationID,
 		Payload:       payload,
 	}
-	if err := s.withEventLogLock(func() error {
-		if err := s.writeEvent(ev); err != nil {
-			return err
-		}
-		nextOffset, err := s.eventLogSize()
-		if err != nil {
-			return err
-		}
-		return s.applyEventAt(ev, nextOffset)
-	}); err != nil {
-		return "", err
+}
+
+func (s *Store) appendPreparedEventLocked(ev Event) error {
+	if err := s.writeEvent(ev); err != nil {
+		return err
 	}
-	return ev.EventID, nil
+	nextOffset, err := s.eventLogSize()
+	if err != nil {
+		return err
+	}
+	return s.applyEventAt(ev, nextOffset)
 }
 
 func hostname() string {
@@ -1060,11 +1084,27 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 		ref := str(ev.Payload["content_ref"])
 		algo, hash, size := parseContentRef(ref)
 		_, err = tx.Exec(`insert or ignore into content_addresses values(?,?,?,?,?,?)`, ref, algo, hash, size, casKey(ref), ev.EventID)
+		if err == nil {
+			_, err = tx.Exec(`
+				insert or ignore into asset_creation_required(content_ref, stored_object_id, source_occurrence_id, scan_id, required_event_id, required_at_ms)
+				select ?, ?, scl.source_occurrence_id, so.scan_id, ?, ?
+				from stored_objects stored
+				join source_content_links scl on scl.stored_object_id = stored.stored_object_id and scl.content_ref = ?
+				join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+				where stored.stored_object_id = ?
+					and stored.purpose = 'source_media'
+					and not exists (select 1 from assets a where a.content_ref = ?)
+				order by so.source_event_id
+				limit 1`, ref, str(ev.Payload["stored_object_id"]), ev.EventID, ev.RecordedAtMS, ref, str(ev.Payload["stored_object_id"]), ref)
+		}
 	case "AssetCreated":
 		initial := mapValue(ev.Payload["initial_version"])
 		_, err = tx.Exec(`insert or ignore into assets values(?,?,?,?,?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["content_ref"]), str(initial["stored_object_id"]), filenameForAsset(tx, str(initial["source_occurrence_id"])), str(initial["source_occurrence_id"]), str(ev.Payload["scan_id"]), ev.EventID, ev.RecordedAtMS)
 		if err == nil {
 			_, err = tx.Exec(`insert or ignore into asset_versions values(?,?,?,?,?,?)`, str(initial["asset_version_id"]), str(ev.Payload["asset_id"]), str(initial["role"]), str(initial["stored_object_id"]), str(ev.Payload["content_ref"]), str(initial["source_occurrence_id"]))
+		}
+		if err == nil {
+			_, err = tx.Exec(`delete from asset_creation_required where content_ref = ?`, str(ev.Payload["content_ref"]))
 		}
 	case "HistoricalInventoryScanRequested":
 		_, err = tx.Exec(`insert or ignore into historical_inventory_scans values(?,?,?,?,?,?,?)`, str(ev.Payload["scan_id"]), str(ev.Payload["historical_inventory_id"]), str(ev.Payload["inventory_type"]), pj("parser"), pj("filter"), pj("path_resolver"), ev.EventID)
@@ -1340,23 +1380,13 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 		})
 	}
 	if !existed {
-		materializedEventID, err := s.materialize(objID, filepath.ToSlash(key), ref)
-		if err != nil {
-			s.contentMu.Unlock()
-			return err
-		}
-		if err := s.ensureAssetForSourceMedia(scanID, ref, objID, occID, materializedEventID); err != nil {
+		if _, err := s.materialize(objID, filepath.ToSlash(key), ref); err != nil {
 			s.contentMu.Unlock()
 			return err
 		}
 		withReportLock(reportMu, func() {
 			report.ContentAddressesMaterialized++
 		})
-	} else if !s.assetExists(ref) {
-		if err := s.ensureAssetForSourceMedia(scanID, ref, objID, occID, ""); err != nil {
-			s.contentMu.Unlock()
-			return err
-		}
 	}
 	s.contentMu.Unlock()
 	if err := s.recordMetadataForSourceFile(scanID, causationID, occID, objID, ref, filepath.ToSlash(key), sourceKind); err != nil {
@@ -1401,39 +1431,69 @@ func (s *Store) materialize(objID, acquiredKey, ref string) (string, error) {
 	})
 }
 
-func (s *Store) ensureAssetForSourceMedia(scanID, contentRef, storedObjectID, sourceOccurrenceID, materializedEventID string) error {
-	if s.assetExists(contentRef) {
-		return nil
-	}
-	assetID := newID("asset")
-	versionID := newID("av")
-	trigger := map[string]any{"type": "ContentAddressMaterialized"}
-	if materializedEventID != "" {
-		trigger["event_id"] = materializedEventID
-	}
-	return s.appendEvent("AssetCreated", nil, &scanID, map[string]any{
-		"scan_id":     scanID,
-		"asset_id":    assetID,
-		"content_ref": contentRef,
-		"initial_version": map[string]any{
-			"asset_version_id":     versionID,
-			"role":                 "original",
-			"stored_object_id":     storedObjectID,
-			"source_occurrence_id": sourceOccurrenceID,
-		},
-		"defaults": map[string]any{
-			"quality":    "Unrated",
-			"status":     "Triage",
-			"visibility": "Normal",
-		},
-		"trigger": trigger,
+type pendingAssetCreation struct {
+	ContentRef         string
+	StoredObjectID     string
+	SourceOccurrenceID string
+	ScanID             string
+	RequiredEventID    string
+}
+
+func (s *Store) drainAssetCreationRequired() error {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	return s.withEventLogLock(func() error {
+		for {
+			pending, ok, err := s.nextAssetCreationRequired()
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			causationID := pending.RequiredEventID
+			correlationID := pending.ScanID
+			ev := newEvent("AssetCreated", &causationID, &correlationID, map[string]any{
+				"scan_id":     pending.ScanID,
+				"asset_id":    newID("asset"),
+				"content_ref": pending.ContentRef,
+				"initial_version": map[string]any{
+					"asset_version_id":     newID("av"),
+					"role":                 "original",
+					"stored_object_id":     pending.StoredObjectID,
+					"source_occurrence_id": pending.SourceOccurrenceID,
+				},
+				"defaults": map[string]any{
+					"quality":    "Unrated",
+					"status":     "Triage",
+					"visibility": "Normal",
+				},
+				"trigger": map[string]any{
+					"type":     "ContentAddressMaterialized",
+					"event_id": pending.RequiredEventID,
+				},
+			})
+			if err := s.appendPreparedEventLocked(ev); err != nil {
+				return err
+			}
+		}
 	})
 }
 
-func (s *Store) assetExists(contentRef string) bool {
-	var existing string
-	err := s.DB.QueryRow(`select asset_id from assets where content_ref = ?`, contentRef).Scan(&existing)
-	return err == nil
+func (s *Store) nextAssetCreationRequired() (pendingAssetCreation, bool, error) {
+	var pending pendingAssetCreation
+	err := s.DB.QueryRow(`
+		select content_ref, stored_object_id, source_occurrence_id, scan_id, required_event_id
+		from asset_creation_required
+		order by required_at_ms, required_event_id
+		limit 1`).Scan(&pending.ContentRef, &pending.StoredObjectID, &pending.SourceOccurrenceID, &pending.ScanID, &pending.RequiredEventID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return pendingAssetCreation{}, false, nil
+		}
+		return pendingAssetCreation{}, false, err
+	}
+	return pending, true, nil
 }
 
 func (s *Store) contentAddressExists(ref string) bool {
