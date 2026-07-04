@@ -60,6 +60,14 @@ type Job struct {
 	ProgressTotal   *int     `json:"progress_total"`
 }
 
+func (j Job) MarshalJSON() ([]byte, error) {
+	type jobAlias Job
+	if j.Progress == nil {
+		j.Progress = []string{}
+	}
+	return json.Marshal(jobAlias(j))
+}
+
 type ServerEvent struct {
 	Type         string `json:"type"`
 	RecordedAtMS int64  `json:"recorded_at_ms"`

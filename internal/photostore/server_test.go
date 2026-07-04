@@ -36,6 +36,43 @@ func TestCloneJobSerializesEmptyProgressArray(t *testing.T) {
 	}
 }
 
+func TestJobSerializesEmptyProgressArray(t *testing.T) {
+	raw, err := json.Marshal(Job{JobID: "job_test", Kind: "source_scan", Status: "running", StartedAtMS: 1710504000000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"progress":null`) {
+		t.Fatalf("job JSON has null progress: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"progress":[]`) {
+		t.Fatalf("job JSON missing empty progress array: %s", raw)
+	}
+}
+
+func TestAssetProjectionsSerializeEmptyArrays(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "asset labels", value: AssetProjection{AssetID: "asset_test"}, want: `"labels":[]`},
+		{name: "page assets", value: AssetPageProjection{}, want: `"assets":[]`},
+		{name: "detail labels", value: AssetDetailProjection{AssetProjection: AssetProjection{AssetID: "asset_test"}}, want: `"labels":[]`},
+		{name: "detail sources", value: AssetDetailProjection{AssetProjection: AssetProjection{AssetID: "asset_test"}}, want: `"sources":[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), tt.want) {
+				t.Fatalf("JSON = %s, want %s", raw, tt.want)
+			}
+		})
+	}
+}
+
 func TestGPSCoordinatesFromMetadata(t *testing.T) {
 	fields := map[string]map[string]string{
 		"gps_latitude":      {"raw": "45/1,7/1,3367/100"},

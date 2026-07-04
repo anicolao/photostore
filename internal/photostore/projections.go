@@ -167,6 +167,14 @@ type AssetProjection struct {
 	CreatedAtMS            int64    `json:"created_at_ms"`
 }
 
+func (a AssetProjection) MarshalJSON() ([]byte, error) {
+	type assetAlias AssetProjection
+	if a.Labels == nil {
+		a.Labels = []string{}
+	}
+	return json.Marshal(assetAlias(a))
+}
+
 type AssetPageProjection struct {
 	Assets     []AssetProjection `json:"assets"`
 	Total      int               `json:"total"`
@@ -176,9 +184,34 @@ type AssetPageProjection struct {
 	PrevOffset *int              `json:"prev_offset,omitempty"`
 }
 
+func (p AssetPageProjection) MarshalJSON() ([]byte, error) {
+	type pageAlias AssetPageProjection
+	if p.Assets == nil {
+		p.Assets = []AssetProjection{}
+	}
+	return json.Marshal(pageAlias(p))
+}
+
 type AssetDetailProjection struct {
 	AssetProjection
 	Sources []AssetSourceProjection `json:"sources"`
+}
+
+func (d AssetDetailProjection) MarshalJSON() ([]byte, error) {
+	type assetAlias AssetProjection
+	if d.Labels == nil {
+		d.Labels = []string{}
+	}
+	if d.Sources == nil {
+		d.Sources = []AssetSourceProjection{}
+	}
+	return json.Marshal(struct {
+		assetAlias
+		Sources []AssetSourceProjection `json:"sources"`
+	}{
+		assetAlias: assetAlias(d.AssetProjection),
+		Sources:    d.Sources,
+	})
 }
 
 type AssetSourceProjection struct {
