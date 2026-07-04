@@ -50,9 +50,9 @@ Events record user intent. Reducers compute current asset state and filterable v
 
 ### AssetCreated
 
-Records the allocated identity for a newly materialized JPEG content value.
+Records the asset identity allocated for a newly materialized JPEG content value.
 
-Asset ids are allocated, not derived from `content_ref`. This avoids baking the MVP identity rule into externally visible ids before richer asset grouping exists. The event is emitted only after `ContentAddressMaterialized` for new JPEG content. Duplicate source occurrences and already-materialized content must not create another asset.
+The event is emitted after `ContentAddressMaterialized` for new JPEG content. Duplicate source occurrences and already-materialized content do not create another asset.
 
 ```json
 {
@@ -95,9 +95,9 @@ on ContentAddressMaterialized for new JPEG content:
     append AssetCreated
 ```
 
-The scan should not consider the item complete until `AssetCreated` is appended and projected. If the process stops after `ContentAddressMaterialized` but before `AssetCreated`, scan resume should continue the same acquisition workflow and append the missing `AssetCreated` event before doing asset-scoped work. This is not reducer-created asset identity; it is completion of an interrupted command workflow.
+The scan should not consider the item complete until `AssetCreated` is appended and projected. If the process stops after `ContentAddressMaterialized` but before `AssetCreated`, scan resume should continue the same acquisition workflow and append the missing `AssetCreated` event before doing asset-scoped work.
 
-No other event should create an asset in the MVP. Metadata, thumbnail, source occurrence, label, status, and visibility events update projections for an existing asset. If a historical-inventory link references content that has no asset, that is a projection or ingestion inconsistency to report, not a reason for the inventory event to allocate asset identity.
+Metadata, thumbnail, source occurrence, label, status, and visibility events update projections for an existing asset. If a historical-inventory link references content that has no asset, report that as an ingestion consistency issue.
 
 ### QualityLabelSet
 
