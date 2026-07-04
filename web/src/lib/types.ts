@@ -121,6 +121,20 @@ export type AssetSource = {
   scan_id: string;
 };
 
+export type AssetNavigationItem = {
+  asset_id: string;
+  filename: string;
+  view_url: string;
+};
+
+export type AssetNavigation = {
+  list: string;
+  label: string;
+  current: AssetNavigationItem;
+  previous: AssetNavigationItem | null;
+  next: AssetNavigationItem | null;
+};
+
 export type AssetDetail = Asset & {
   sources: AssetSource[];
 };

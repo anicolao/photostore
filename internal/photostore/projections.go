@@ -224,6 +224,20 @@ type AssetSourceProjection struct {
 	ScanID             string `json:"scan_id"`
 }
 
+type AssetNavigationProjection struct {
+	List     string               `json:"list"`
+	Label    string               `json:"label"`
+	Current  AssetNavigationItem  `json:"current"`
+	Previous *AssetNavigationItem `json:"previous"`
+	Next     *AssetNavigationItem `json:"next"`
+}
+
+type AssetNavigationItem struct {
+	AssetID  string `json:"asset_id"`
+	Filename string `json:"filename"`
+	ViewURL  string `json:"view_url"`
+}
+
 type LabelProjection struct {
 	NormalizedLabel string `json:"normalized_label"`
 	DisplayLabel    string `json:"display_label"`
@@ -787,51 +801,20 @@ func (s *Store) MetadataMissing() ([]MetadataPhotoProjection, error) {
 }
 
 func (s *Store) Assets(query url.Values) (AssetPageProjection, error) {
-	where := []string{"1 = 1"}
-	args := []any{}
-	if assetID := query.Get("asset_id"); assetID != "" {
-		where = append(where, "a.asset_id = ?")
-		args = append(args, assetID)
-	}
-	if quality := query.Get("quality"); quality != "" {
-		where = append(where, "coalesce(aq.quality, 'Unrated') = ?")
-		args = append(args, quality)
-	}
-	if status := query.Get("status"); status != "" {
-		where = append(where, "coalesce(ast.status, 'Triage') = ?")
-		args = append(args, status)
-	}
-	if visibility := query.Get("visibility"); visibility != "" {
-		where = append(where, "coalesce(av.visibility, 'Normal') = ?")
-		args = append(args, visibility)
-	}
-	if label := query.Get("label"); label != "" {
-		where = append(where, `exists (
-			select 1 from asset_labels filter_label
-			where filter_label.asset_id = a.asset_id and filter_label.normalized_label = ?
-		)`)
-		args = append(args, normalizeAssetLabel(label))
-	}
+	parts := assetQueryParts(query)
 	limit := boundedQueryInt(query.Get("limit"), 60, 1, 200)
 	offset := boundedQueryInt(query.Get("offset"), 0, 0, 1_000_000_000)
-	whereSQL := strings.Join(where, " and ")
 	var total int
 	if err := s.DB.QueryRow(fmt.Sprintf(`
+		%s
 		select count(*)
-		from assets a
-		left join asset_quality aq on aq.asset_id = a.asset_id
-		left join asset_status ast on ast.asset_id = a.asset_id
-		left join asset_visibility av on av.asset_id = a.asset_id
-		where %s`, whereSQL), args...).Scan(&total); err != nil {
+		%s
+		where %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL), parts.Args...).Scan(&total); err != nil {
 		return AssetPageProjection{}, err
 	}
-	pageArgs := append(append([]any{}, args...), limit, offset)
+	pageArgs := append(append([]any{}, parts.Args...), limit, offset)
 	rows, err := s.DB.Query(fmt.Sprintf(`
-		with capture as (
-			select content_ref, min(capture_date) as capture_date, min(capture_time_local) as capture_time_local
-			from photo_capture_times
-			group by content_ref
-		)
+		%s
 		select a.asset_id,
 			a.content_ref,
 			a.representative_stored_object_id,
@@ -843,14 +826,10 @@ func (s *Store) Assets(query url.Values) (AssetPageProjection, error) {
 			coalesce(pct.capture_time_local, ''),
 			coalesce(a.created_at_ms, 0),
 			(select count(*) from source_content_links scl where scl.content_ref = a.content_ref)
-		from assets a
-		left join asset_quality aq on aq.asset_id = a.asset_id
-		left join asset_status ast on ast.asset_id = a.asset_id
-		left join asset_visibility av on av.asset_id = a.asset_id
-		left join capture pct on pct.content_ref = a.content_ref
+		%s
 		where %s
-		order by coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id
-		limit ? offset ?`, whereSQL), pageArgs...)
+		order by %s
+		limit ? offset ?`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), pageArgs...)
 	if err != nil {
 		return AssetPageProjection{}, err
 	}
@@ -888,6 +867,90 @@ func (s *Store) Assets(query url.Values) (AssetPageProjection, error) {
 	return page, nil
 }
 
+const assetFromSQL = `
+	from assets a
+	left join asset_quality aq on aq.asset_id = a.asset_id
+	left join asset_status ast on ast.asset_id = a.asset_id
+	left join asset_visibility av on av.asset_id = a.asset_id
+	left join capture pct on pct.content_ref = a.content_ref
+	left join content_metadata cm on cm.content_ref = a.content_ref
+		and cm.extractor_name = ?
+		and cm.extractor_version = ?`
+
+type assetQuery struct {
+	WithSQL  string
+	WhereSQL string
+	OrderSQL string
+	Args     []any
+	Label    string
+}
+
+func assetQueryParts(query url.Values) assetQuery {
+	where := []string{"1 = 1"}
+	args := []any{metadataExtractorName, metadataExtractorVersion}
+	if assetID := query.Get("asset_id"); assetID != "" {
+		where = append(where, "a.asset_id = ?")
+		args = append(args, assetID)
+	}
+	if quality := query.Get("quality"); quality != "" {
+		where = append(where, "coalesce(aq.quality, 'Unrated') = ?")
+		args = append(args, quality)
+	}
+	if status := query.Get("status"); status != "" {
+		where = append(where, "coalesce(ast.status, 'Triage') = ?")
+		args = append(args, status)
+	}
+	if visibility := query.Get("visibility"); visibility != "" {
+		where = append(where, "coalesce(av.visibility, 'Normal') = ?")
+		args = append(args, visibility)
+	}
+	if label := query.Get("label"); label != "" {
+		where = append(where, `exists (
+			select 1 from asset_labels filter_label
+			where filter_label.asset_id = a.asset_id and filter_label.normalized_label = ?
+		)`)
+		args = append(args, normalizeAssetLabel(label))
+	}
+	if truthyQuery(query.Get("has_date")) {
+		where = append(where, "pct.capture_date is not null and pct.capture_date != ''")
+	}
+	if truthyQuery(query.Get("min_megapixels")) {
+		where = append(where, `cast(json_extract(cm.fields_json, '$.pixel_x_dimension.raw') as integer) *
+			cast(json_extract(cm.fields_json, '$.pixel_y_dimension.raw') as integer) >= ?`)
+		args = append(args, 1_000_000)
+	}
+	order := "coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id"
+	label := "Assets"
+	switch query.Get("sort") {
+	case "date_desc":
+		order = "coalesce(pct.capture_time_local, '') desc, a.original_filename, a.asset_id"
+		label = "Assets by date descending"
+	case "date_asc":
+		order = "coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id"
+		label = "Assets by date ascending"
+	}
+	return assetQuery{
+		WithSQL: `with capture as (
+			select content_ref, min(capture_date) as capture_date, min(capture_time_local) as capture_time_local
+			from photo_capture_times
+			group by content_ref
+		)`,
+		WhereSQL: strings.Join(where, " and "),
+		OrderSQL: order,
+		Args:     args,
+		Label:    label,
+	}
+}
+
+func truthyQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Store) Asset(assetID string) (AssetDetailProjection, error) {
 	page, err := s.Assets(url.Values{"asset_id": []string{assetID}, "limit": []string{"1"}})
 	if err != nil {
@@ -901,6 +964,82 @@ func (s *Store) Asset(assetID string) (AssetDetailProjection, error) {
 		return AssetDetailProjection{}, err
 	}
 	return AssetDetailProjection{AssetProjection: page.Assets[0], Sources: sources}, nil
+}
+
+func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigationProjection, error) {
+	nextQuery := url.Values{}
+	for key, values := range query {
+		if key == "limit" || key == "offset" {
+			continue
+		}
+		for _, value := range values {
+			nextQuery.Add(key, value)
+		}
+	}
+	parts := assetQueryParts(nextQuery)
+	rows, err := s.DB.Query(fmt.Sprintf(`
+		%s
+		select a.asset_id, coalesce(a.original_filename, '')
+		%s
+		where %s
+		order by %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), parts.Args...)
+	if err != nil {
+		return AssetNavigationProjection{}, err
+	}
+	defer rows.Close()
+	items := []AssetNavigationItem{}
+	for rows.Next() {
+		var item AssetNavigationItem
+		if err := rows.Scan(&item.AssetID, &item.Filename); err != nil {
+			return AssetNavigationProjection{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return AssetNavigationProjection{}, err
+	}
+	return assetNavigationFromItems(assetID, parts.Label, nextQuery, items)
+}
+
+func assetNavigationFromItems(assetID, label string, query url.Values, items []AssetNavigationItem) (AssetNavigationProjection, error) {
+	currentIndex := -1
+	for i := range items {
+		items[i].ViewURL = assetViewURLWithContext(items[i].AssetID, query)
+		if items[i].AssetID == assetID {
+			currentIndex = i
+		}
+	}
+	if currentIndex < 0 {
+		return AssetNavigationProjection{}, sql.ErrNoRows
+	}
+	out := AssetNavigationProjection{
+		List:    "assets",
+		Label:   label,
+		Current: items[currentIndex],
+	}
+	if currentIndex > 0 {
+		prev := items[currentIndex-1]
+		out.Previous = &prev
+	}
+	if currentIndex+1 < len(items) {
+		next := items[currentIndex+1]
+		out.Next = &next
+	}
+	return out, nil
+}
+
+func assetViewURLWithContext(assetID string, query url.Values) string {
+	next := url.Values{}
+	for key, values := range query {
+		for _, value := range values {
+			next.Add(key, value)
+		}
+	}
+	encoded := next.Encode()
+	if encoded == "" {
+		return "/assets/" + assetID
+	}
+	return "/assets/" + assetID + "?" + encoded
 }
 
 func (s *Store) AssetSources(assetID string) ([]AssetSourceProjection, error) {

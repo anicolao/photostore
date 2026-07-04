@@ -1266,6 +1266,13 @@ func applyEventInTx(tx *sql.Tx, ev Event, nextOffset int64, skipAppliedCheck boo
 		_, err = tx.Exec(`insert or ignore into metadata_issues values(?,?,?,?,?,?,?,?,?,?,?)`, ev.EventID, str(ev.Payload["content_ref"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), str(extractor["name"]), int64Value(extractor["version"]), int64Value(ev.Payload["detected_at_ms"]), str(issue["type"]), str(issue["severity"]), mustJSON(ev.Payload))
 	case "QualityLabelSet":
 		_, err = tx.Exec(`insert or replace into asset_quality values(?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["quality"]), ev.EventID, ev.RecordedAtMS)
+		if err == nil {
+			_, err = tx.Exec(`
+				insert or replace into asset_status(asset_id, status, set_event_id, set_at_ms)
+				select ?, 'Reviewed', ?, ?
+				where coalesce((select status from asset_status where asset_id = ?), 'Triage') = 'Triage'`,
+				str(ev.Payload["asset_id"]), ev.EventID, ev.RecordedAtMS, str(ev.Payload["asset_id"]))
+		}
 	case "AssetStatusSet":
 		_, err = tx.Exec(`insert or replace into asset_status values(?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["status"]), ev.EventID, ev.RecordedAtMS)
 	case "AssetVisibilitySet":

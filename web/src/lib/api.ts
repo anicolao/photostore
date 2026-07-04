@@ -1,4 +1,4 @@
-import type { AcquiredFile, Asset, AssetDetail, AssetPage, AssetSource, DatedPhotoResponse, HistoricalInventory, Job, LabelSummary, MetadataPhoto, MetadataSummary, ObjectMetadata, ObjectNavigation, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
+import type { AcquiredFile, Asset, AssetDetail, AssetNavigation, AssetPage, AssetSource, DatedPhotoResponse, HistoricalInventory, Job, LabelSummary, MetadataPhoto, MetadataSummary, ObjectMetadata, ObjectNavigation, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -143,6 +143,11 @@ export function getAssets(params = new URLSearchParams()): Promise<AssetPage> {
 
 export function getAsset(assetID: string): Promise<AssetDetail> {
   return request(`/api/assets/${assetID}`);
+}
+
+export function getAssetNavigation(assetID: string, params = new URLSearchParams()): Promise<AssetNavigation> {
+  const query = params.toString();
+  return request(query ? `/api/assets/${assetID}/navigation?${query}` : `/api/assets/${assetID}/navigation`);
 }
 
 export function getAssetSources(assetID: string): Promise<AssetSource[]> {

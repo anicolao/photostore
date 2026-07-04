@@ -118,6 +118,105 @@ func TestAssetsPagination(t *testing.T) {
 	}
 }
 
+func TestAssetQualityMarksTriageAssetReviewed(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	mustWrite(t, filepath.Join(sourcePath, "A.JPG"), []byte("asset-quality"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sourceID, err := st.AddSourceRoot(sourcePath, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSourceRootsWithOptions([]string{sourceID}, nil, ScanOptions{Workers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.Assets(url.Values{"limit": []string{"1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Assets) != 1 {
+		t.Fatalf("assets = %#v, want one asset", page.Assets)
+	}
+	if page.Assets[0].Status != "Triage" {
+		t.Fatalf("initial asset status = %s, want Triage", page.Assets[0].Status)
+	}
+	if err := st.SetAssetQuality(page.Assets[0].AssetID, "Good"); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := st.Asset(page.Assets[0].AssetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Quality != "Good" || detail.Status != "Reviewed" {
+		t.Fatalf("asset after quality = quality %s status %s, want Good Reviewed", detail.Quality, detail.Status)
+	}
+}
+
+func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
+	root := t.TempDir()
+	storePath := filepath.Join(root, "store")
+	sourcePath := filepath.Join(root, "source")
+	mustMkdir(t, sourcePath)
+	oldLarge := jpegWithEXIF(t, map[uint16]string{
+		0x9003: "2010:01:02 03:04:05",
+		0xa002: "2000",
+		0xa003: "1000",
+	})
+	newSmall := jpegWithEXIF(t, map[uint16]string{
+		0x9003: "2012:03:04 05:06:07",
+		0xa002: "640",
+		0xa003: "480",
+	})
+	mustWrite(t, filepath.Join(sourcePath, "OLD_LARGE.JPG"), oldLarge)
+	mustWrite(t, filepath.Join(sourcePath, "NEW_SMALL.JPG"), newSmall)
+	mustWrite(t, filepath.Join(sourcePath, "NO_DATE.JPG"), []byte("no-date"))
+
+	st, err := Init(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	sourceID, err := st.AddSourceRoot(sourcePath, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ScanSourceRootsWithOptions([]string{sourceID}, nil, ScanOptions{Workers: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	dated, err := st.Assets(url.Values{"has_date": []string{"1"}, "sort": []string{"date_desc"}, "limit": []string{"10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dated.Total != 2 || len(dated.Assets) != 2 {
+		t.Fatalf("dated assets = %#v, want two dated assets", dated)
+	}
+	if dated.Assets[0].Filename != "NEW_SMALL.JPG" || dated.Assets[1].Filename != "OLD_LARGE.JPG" {
+		t.Fatalf("date desc order = %s, %s; want NEW_SMALL.JPG, OLD_LARGE.JPG", dated.Assets[0].Filename, dated.Assets[1].Filename)
+	}
+	large, err := st.Assets(url.Values{"has_date": []string{"1"}, "min_megapixels": []string{"1"}, "limit": []string{"10"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if large.Total != 1 || len(large.Assets) != 1 || large.Assets[0].Filename != "OLD_LARGE.JPG" {
+		t.Fatalf("large dated assets = %#v, want OLD_LARGE.JPG only", large)
+	}
+	nav, err := st.AssetNavigation(large.Assets[0].AssetID, url.Values{"has_date": []string{"1"}, "sort": []string{"date_asc"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nav.Current.Filename != "OLD_LARGE.JPG" || nav.Next == nil || nav.Next.Filename != "NEW_SMALL.JPG" || nav.Previous != nil {
+		t.Fatalf("navigation = %#v, want OLD_LARGE then NEW_SMALL", nav)
+	}
+}
+
 func TestInitExistingStoreDoesNotAppendDuplicateInitializedEvent(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "store")
 	st, err := Init(storePath)

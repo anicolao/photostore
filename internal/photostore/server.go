@@ -234,6 +234,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/photos/undated", s.handleUndatedPhotos)
 	s.mux.HandleFunc("GET /api/assets", s.handleAssets)
 	s.mux.HandleFunc("GET /api/assets/{asset_id}", s.handleAsset)
+	s.mux.HandleFunc("GET /api/assets/{asset_id}/navigation", s.handleAssetNavigation)
 	s.mux.HandleFunc("GET /api/assets/{asset_id}/sources", s.handleAssetSources)
 	s.mux.HandleFunc("POST /api/assets/{asset_id}/quality", s.handleSetAssetQuality)
 	s.mux.HandleFunc("POST /api/assets/{asset_id}/status", s.handleSetAssetStatus)
@@ -448,6 +449,19 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, asset)
+}
+
+func (s *Server) handleAssetNavigation(w http.ResponseWriter, r *http.Request) {
+	navigation, err := s.store.AssetNavigation(r.PathValue("asset_id"), r.URL.Query())
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeErrorStatus(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, navigation)
 }
 
 func (s *Server) handleAssetSources(w http.ResponseWriter, r *http.Request) {

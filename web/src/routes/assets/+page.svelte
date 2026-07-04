@@ -7,6 +7,11 @@
   const qualities = ['Unrated', 'Best', 'Good', 'Poor'];
   const statuses = ['Triage', 'Reviewed'];
   const visibilities = ['Normal', 'Private'];
+  const sorts = [
+    { value: '', label: 'Filename' },
+    { value: 'date_asc', label: 'Date ↑' },
+    { value: 'date_desc', label: 'Date ↓' }
+  ];
 
   let assets: Asset[] = [];
   let labels: LabelSummary[] = [];
@@ -21,6 +26,9 @@
   let status = '';
   let visibility = '';
   let label = '';
+  let hasDate = false;
+  let minMegapixels = false;
+  let sort = '';
   let currentQuery = '\u0000';
   let loadToken = 0;
 
@@ -39,6 +47,9 @@
     status = url.searchParams.get('status') ?? '';
     visibility = url.searchParams.get('visibility') ?? '';
     label = url.searchParams.get('label') ?? '';
+    hasDate = url.searchParams.get('has_date') === '1';
+    minMegapixels = url.searchParams.get('min_megapixels') === '1';
+    sort = url.searchParams.get('sort') ?? '';
     limit = boundedParam(url.searchParams.get('limit'), 60, 1, 200);
     offset = boundedParam(url.searchParams.get('offset'), 0, 0, 1_000_000_000);
     loading = true;
@@ -49,6 +60,9 @@
     if (status) params.set('status', status);
     if (visibility) params.set('visibility', visibility);
     if (label) params.set('label', label);
+    if (hasDate) params.set('has_date', '1');
+    if (minMegapixels) params.set('min_megapixels', '1');
+    if (sort) params.set('sort', sort);
     params.set('limit', String(limit));
     if (offset > 0) params.set('offset', String(offset));
     try {
@@ -78,31 +92,51 @@
     return value;
   }
 
-  function filteredHref(next: { quality?: string; status?: string; visibility?: string; label?: string }) {
+  function filteredHref(next: { quality?: string; status?: string; visibility?: string; label?: string; hasDate?: boolean; minMegapixels?: boolean; sort?: string }) {
     const params = new URLSearchParams();
     const nextQuality = next.quality ?? quality;
     const nextStatus = next.status ?? status;
     const nextVisibility = next.visibility ?? visibility;
     const nextLabel = next.label ?? label;
+    const nextHasDate = next.hasDate ?? hasDate;
+    const nextMinMegapixels = next.minMegapixels ?? minMegapixels;
+    const nextSort = next.sort ?? sort;
     if (nextQuality) params.set('quality', nextQuality);
     if (nextStatus) params.set('status', nextStatus);
     if (nextVisibility) params.set('visibility', nextVisibility);
     if (nextLabel) params.set('label', nextLabel);
+    if (nextHasDate) params.set('has_date', '1');
+    if (nextMinMegapixels) params.set('min_megapixels', '1');
+    if (nextSort) params.set('sort', nextSort);
     params.set('limit', String(limit));
     const query = params.toString();
     return query ? `/assets?${query}` : '/assets';
   }
 
-  function pageHref(nextOffset: number | undefined) {
+  function assetContextParams() {
     const params = new URLSearchParams();
     if (quality) params.set('quality', quality);
     if (status) params.set('status', status);
     if (visibility) params.set('visibility', visibility);
     if (label) params.set('label', label);
+    if (hasDate) params.set('has_date', '1');
+    if (minMegapixels) params.set('min_megapixels', '1');
+    if (sort) params.set('sort', sort);
+    return params;
+  }
+
+  function pageHref(nextOffset: number | undefined) {
+    const params = assetContextParams();
     params.set('limit', String(limit));
     if (nextOffset && nextOffset > 0) params.set('offset', String(nextOffset));
     const query = params.toString();
     return query ? `/assets?${query}` : '/assets';
+  }
+
+  function assetHref(assetID: string) {
+    const params = assetContextParams();
+    const query = params.toString();
+    return query ? `/assets/${assetID}?${query}` : `/assets/${assetID}`;
   }
 
   function formatCapture(asset: Asset) {
@@ -155,6 +189,19 @@
         <a data-testid={`label-filter-${item.normalized_label}`} class:active={label === item.normalized_label} href={filteredHref({ label: item.normalized_label })}>{item.display_label}</a>
       {/each}
     </div>
+    <div>
+      <span>Metadata</span>
+      <a data-testid="date-filter-all" class:active={!hasDate} href={filteredHref({ hasDate: false })}>All dates</a>
+      <a data-testid="date-filter-known" class:active={hasDate} href={filteredHref({ hasDate: true })}>Has date</a>
+      <a data-testid="megapixel-filter-all" class:active={!minMegapixels} href={filteredHref({ minMegapixels: false })}>All sizes</a>
+      <a data-testid="megapixel-filter-large" class:active={minMegapixels} href={filteredHref({ minMegapixels: true })}>&gt; 1MP</a>
+    </div>
+    <div>
+      <span>Sort</span>
+      {#each sorts as item}
+        <a data-testid={`sort-filter-${item.value || 'filename'}`} class:active={sort === item.value} href={filteredHref({ sort: item.value })}>{item.label}</a>
+      {/each}
+    </div>
   </section>
 
   {#if loading}
@@ -174,7 +221,7 @@
       </div>
       <div class="asset-grid" data-testid="asset-grid">
         {#each assets as asset}
-          <a class="asset-card" data-testid="asset-card" href={`/assets/${asset.asset_id}`}>
+          <a class="asset-card" data-testid="asset-card" href={assetHref(asset.asset_id)}>
             <span class="thumb-wrap">
               <img data-testid="asset-thumbnail" src={asset.thumbnail_url} alt={asset.filename} loading="lazy">
             </span>

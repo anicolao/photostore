@@ -9,13 +9,31 @@ const fixtureJPEG = Buffer.from(
 
 test('asset triage labels and filters assets', async ({ page }, testInfo) => {
   const tester = new TestStepHelper(page, testInfo);
-  tester.setMetadata('Asset Triage', 'Scan duplicate JPEG content, open the asset view, set quality/status/visibility, manage labels, and filter the asset grid.');
+  tester.setMetadata('Asset Triage', 'Scan duplicate JPEG content, filter the triage queue, navigate asset decisions, set labels, and verify reviewed assets.');
 
   const source = '/tmp/photostore-e2e-triage-source';
   rmSync(source, { recursive: true, force: true });
   mkdirSync(source, { recursive: true });
-  writeFileSync(`${source}/TRIAGE_A.JPG`, fixtureJPEG);
-  writeFileSync(`${source}/TRIAGE_A_COPY.jpeg`, fixtureJPEG);
+  const triageA = jpegWithEXIF(fixtureJPEG, [
+    [0x9003, '2017:07:21 10:11:12'],
+    [0xa002, '2000'],
+    [0xa003, '1000']
+  ]);
+  const triageB = jpegWithEXIF(fixtureJPEG, [
+    [0x9003, '2018:08:22 11:12:13'],
+    [0xa002, '2000'],
+    [0xa003, '1000']
+  ]);
+  const triageSmall = jpegWithEXIF(fixtureJPEG, [
+    [0x9003, '2019:09:23 12:13:14'],
+    [0xa002, '640'],
+    [0xa003, '480']
+  ]);
+  writeFileSync(`${source}/TRIAGE_A.JPG`, triageA);
+  writeFileSync(`${source}/TRIAGE_A_COPY.jpeg`, triageA);
+  writeFileSync(`${source}/TRIAGE_B.JPG`, triageB);
+  writeFileSync(`${source}/TRIAGE_SMALL.JPG`, triageSmall);
+  writeFileSync(`${source}/TRIAGE_NODATE.JPG`, fixtureJPEG);
 
   await page.goto('/');
   await page.getByTestId('source-path-input').fill(source);
@@ -43,19 +61,46 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     ]
   });
 
+  await page.goto('/assets?status=Triage&has_date=1&min_megapixels=1&sort=date_asc');
+  await tester.step('triage-queue-filtered', {
+    description: 'The triage queue can be filtered to dated photos above one megapixel and sorted by capture date.',
+    verifications: [
+      { spec: 'Triage status filter is active', check: async () => await expect(page.getByTestId('status-filter-Triage')).toHaveClass(/active/) },
+      { spec: 'Known date filter is active', check: async () => await expect(page.getByTestId('date-filter-known')).toHaveClass(/active/) },
+      { spec: 'Large image filter is active', check: async () => await expect(page.getByTestId('megapixel-filter-large')).toHaveClass(/active/) },
+      { spec: 'Date ascending sort is active', check: async () => await expect(page.getByTestId('sort-filter-date_asc')).toHaveClass(/active/) },
+      { spec: 'Large dated triage item A is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_A.JPG') },
+      { spec: 'Large dated triage item B is visible', check: async () => await expect(page.getByTestId('asset-grid')).toContainText('TRIAGE_B.JPG') },
+      { spec: 'Small dated item is excluded', check: async () => await expect(page.getByTestId('asset-grid')).not.toContainText('TRIAGE_SMALL.JPG') },
+      { spec: 'No-date item is excluded', check: async () => await expect(page.getByTestId('asset-grid')).not.toContainText('TRIAGE_NODATE.JPG') }
+    ]
+  });
+
   await page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' }).click();
   await tester.step('asset-detail-provenance', {
-    description: 'The asset detail view shows triage controls and both source occurrences.',
+    description: 'The asset detail view shows triage controls, navigation, and both source occurrences.',
     verifications: [
       { spec: 'Asset detail thumbnail is visible', check: async () => await expect(page.getByTestId('asset-detail-thumbnail')).toBeVisible() },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },
-      { spec: 'Source provenance lists duplicate fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A_COPY.jpeg') }
+      { spec: 'Source provenance lists duplicate fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A_COPY.jpeg') },
+      { spec: 'Advance to next is checked by default', check: async () => await expect(page.getByTestId('asset-advance-to-next')).toBeChecked() },
+      { spec: 'Next asset navigation is available', check: async () => await expect(page.getByTestId('asset-next')).not.toHaveClass(/disabled/) }
     ]
   });
 
   await page.getByTestId('quality-Best').click();
-  await page.getByTestId('status-Reviewed').click();
+  await tester.step('asset-quality-advances', {
+    description: 'Setting quality marks the asset reviewed in the reducer and advances to the next triage item.',
+    verifications: [
+      { spec: 'The detail view advanced to TRIAGE_B.JPG', check: async () => await expect(page.getByRole('heading', { name: 'TRIAGE_B.JPG' })).toBeVisible() },
+      { spec: 'The reviewed asset left the Triage navigation queue', check: async () => await expect(page.getByTestId('asset-prev')).toHaveClass(/disabled/) },
+      { spec: 'The next asset remains in Triage', check: async () => await expect(page.getByTestId('status-Triage')).toHaveClass(/active/) }
+    ]
+  });
+
+  await page.goto('/assets?status=Reviewed');
+  await page.getByTestId('asset-card').filter({ hasText: 'TRIAGE_A.JPG' }).click();
   await page.getByTestId('visibility-Private').click();
   await page.getByTestId('asset-label-input').fill('Family');
   await page.getByTestId('asset-label-add').click();
@@ -101,3 +146,71 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
 
   tester.generateDocs();
 });
+
+function jpegWithEXIF(base: Buffer, fields: Array<[number, string]>) {
+  const payload = exifPayload(fields);
+  const segmentLength = payload.length + 2;
+  const app1 = Buffer.from([0xff, 0xe1, segmentLength >> 8, segmentLength & 0xff]);
+  return Buffer.concat([base.subarray(0, 2), app1, payload, base.subarray(2)]);
+}
+
+function exifPayload(fields: Array<[number, string]>) {
+  const tiffParts: Buffer[] = [];
+  const dataParts: Buffer[] = [];
+  const writeUInt16 = (value: number) => {
+    const out = Buffer.alloc(2);
+    out.writeUInt16LE(value);
+    tiffParts.push(out);
+  };
+  const writeUInt32 = (value: number) => {
+    const out = Buffer.alloc(4);
+    out.writeUInt32LE(value);
+    tiffParts.push(out);
+  };
+
+  tiffParts.push(Buffer.from('II'));
+  writeUInt16(42);
+  writeUInt32(8);
+  writeUInt16(1);
+  writeUInt16(0x8769);
+  writeUInt16(4);
+  writeUInt32(1);
+  const ifd0Size = 2 + 12 + 4;
+  const exifIFDOffset = 8 + ifd0Size;
+  const exifIFDSize = 2 + fields.length * 12 + 4;
+  const dataStart = exifIFDOffset + exifIFDSize;
+  writeUInt32(exifIFDOffset);
+  writeUInt32(0);
+  writeUInt16(fields.length);
+
+  for (const [tag, text] of fields) {
+    writeIFDEntry(tag, Buffer.concat([Buffer.from(text), Buffer.from([0])]), dataStart, tiffParts, dataParts);
+  }
+  writeUInt32(0);
+  return Buffer.concat([Buffer.from('Exif\0\0'), ...tiffParts, ...dataParts]);
+}
+
+function writeIFDEntry(tag: number, value: Buffer, dataStart: number, tiffParts: Buffer[], dataParts: Buffer[]) {
+  const writeUInt16 = (target: Buffer[], next: number) => {
+    const out = Buffer.alloc(2);
+    out.writeUInt16LE(next);
+    target.push(out);
+  };
+  const writeUInt32 = (target: Buffer[], next: number) => {
+    const out = Buffer.alloc(4);
+    out.writeUInt32LE(next);
+    target.push(out);
+  };
+  writeUInt16(tiffParts, tag);
+  writeUInt16(tiffParts, 2);
+  writeUInt32(tiffParts, value.length);
+  if (value.length <= 4) {
+    const inline = Buffer.alloc(4);
+    value.copy(inline);
+    tiffParts.push(inline);
+  } else {
+    const dataLength = dataParts.reduce((sum, part) => sum + part.length, 0);
+    writeUInt32(tiffParts, dataStart + dataLength);
+    dataParts.push(value);
+  }
+}

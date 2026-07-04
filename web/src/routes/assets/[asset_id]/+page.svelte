@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { page } from '$app/stores';
-  import { applyAssetLabel, getAsset, removeAssetLabel, setAssetQuality, setAssetStatus, setAssetVisibility } from '$lib/api';
-  import type { Asset, AssetDetail } from '$lib/types';
+  import { applyAssetLabel, getAsset, getAssetNavigation, removeAssetLabel, setAssetQuality, setAssetStatus, setAssetVisibility } from '$lib/api';
+  import type { Asset, AssetDetail, AssetNavigation } from '$lib/types';
 
   const qualities: Asset['quality'][] = ['Unrated', 'Best', 'Good', 'Poor'];
   const statuses: Asset['status'][] = ['Triage', 'Reviewed'];
@@ -10,35 +11,57 @@
 
   let assetID = '';
   let asset: AssetDetail | null = null;
+  let navigation: AssetNavigation | null = null;
   let label = '';
   let loading = true;
   let saving = false;
   let error = '';
+  let advanceToNext = true;
+  let currentRoute = '\u0000';
+  let loadToken = 0;
 
-  onMount(async () => {
-    assetID = $page.params.asset_id ?? '';
-    await load();
+  onMount(() => {
+    const unsubscribe = page.subscribe(($page) => {
+      const nextRoute = `${$page.params.asset_id ?? ''}?${$page.url.searchParams.toString()}`;
+      if (nextRoute === currentRoute) return;
+      currentRoute = nextRoute;
+      assetID = $page.params.asset_id ?? '';
+      void load($page.url.searchParams);
+    });
+    return unsubscribe;
   });
 
-  async function load() {
+  async function load(params = new URLSearchParams()) {
     loading = true;
     error = '';
+    const token = ++loadToken;
     try {
-      asset = await getAsset(assetID);
+      const [nextAsset, nextNavigation] = await Promise.all([getAsset(assetID), loadNavigation(params)]);
+      if (token !== loadToken) return;
+      asset = nextAsset;
+      navigation = nextNavigation;
     } catch (err) {
+      if (token !== loadToken) return;
       error = String(err);
     } finally {
+      if (token !== loadToken) return;
       loading = false;
     }
   }
 
-  async function mutate(fn: () => Promise<unknown>) {
+  async function mutate(fn: () => Promise<unknown>, options: { advance?: boolean } = {}) {
     if (!asset) return;
     saving = true;
     error = '';
     try {
       await fn();
+      if (options.advance && advanceToNext && navigation?.next) {
+        await goto(navigation.next.view_url);
+        return;
+      }
+      const params = new URLSearchParams($page.url.searchParams);
       asset = await getAsset(assetID);
+      navigation = await loadNavigation(params);
     } catch (err) {
       error = String(err);
     } finally {
@@ -56,6 +79,23 @@
   function sourceName(path: string, relativePath: string) {
     return relativePath || path;
   }
+
+  async function loadNavigation(params: URLSearchParams) {
+    try {
+      return await getAssetNavigation(assetID, assetNavigationParams(params));
+    } catch {
+      return null;
+    }
+  }
+
+  function assetNavigationParams(params: URLSearchParams) {
+    const out = new URLSearchParams();
+    for (const key of ['quality', 'status', 'visibility', 'label', 'has_date', 'min_megapixels', 'sort']) {
+      const value = params.get(key);
+      if (value) out.set(key, value);
+    }
+    return out;
+  }
 </script>
 
 <svelte:head>
@@ -70,7 +110,11 @@
       <p><code>{assetID}</code></p>
     </div>
     {#if asset}
-      <a class="button-link" data-testid="asset-open-image" href={asset.view_url}>Open image</a>
+      <div class="header-actions">
+        <a class="button-link" data-testid="asset-open-image" href={asset.view_url}>Open image</a>
+        <a class="button-link" data-testid="asset-prev" class:disabled={!navigation?.previous} aria-disabled={!navigation?.previous} href={navigation?.previous?.view_url ?? $page.url.pathname}>Previous</a>
+        <a class="button-link" data-testid="asset-next" class:disabled={!navigation?.next} aria-disabled={!navigation?.next} href={navigation?.next?.view_url ?? $page.url.pathname}>Next</a>
+      </div>
     {/if}
   </header>
 
@@ -99,11 +143,20 @@
     </section>
 
     <section class="controls" aria-label="Triage controls">
+      <div class="advance">
+        <label>
+          <input data-testid="asset-advance-to-next" type="checkbox" bind:checked={advanceToNext}>
+          Advance to next
+        </label>
+        {#if navigation}
+          <span data-testid="asset-navigation-label">{navigation.label}</span>
+        {/if}
+      </div>
       <div>
         <h2>Quality</h2>
         <div class="buttons">
           {#each qualities as value}
-            <button data-testid={`quality-${value}`} class:active={asset.quality === value} disabled={saving} on:click={() => mutate(() => setAssetQuality(assetID, value))}>{value}</button>
+            <button data-testid={`quality-${value}`} class:active={asset.quality === value} disabled={saving} on:click={() => mutate(() => setAssetQuality(assetID, value), { advance: value !== 'Unrated' })}>{value}</button>
           {/each}
         </div>
       </div>
@@ -170,6 +223,13 @@
     margin-bottom: 18px;
   }
 
+  .header-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
   h1 {
     margin: 8px 0 2px;
     font-size: 26px;
@@ -200,6 +260,11 @@
     color: #202124;
     padding: 7px 10px;
     text-decoration: none;
+  }
+
+  .button-link.disabled {
+    pointer-events: none;
+    opacity: 0.45;
   }
 
   .detail {
@@ -245,6 +310,22 @@
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 14px;
+  }
+
+  .advance {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    color: #5f6368;
+    font-size: 13px;
+  }
+
+  .advance label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #202124;
   }
 
   .buttons,
