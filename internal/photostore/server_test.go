@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -117,6 +118,35 @@ func TestServerPrunesOnlyOldCompletedJobs(t *testing.T) {
 	}
 	if _, ok := server.jobs["job_done_104"]; !ok {
 		t.Fatal("newest completed job was pruned")
+	}
+}
+
+func TestServerAssetCollectionsSerializeEmptyArrays(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	for _, path := range []string{"/api/assets", "/api/labels"} {
+		res, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = bytes.TrimSpace(body)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200; body = %s", path, res.StatusCode, body)
+		}
+		if string(body) != "[]" {
+			t.Fatalf("GET %s body = %s, want []", path, body)
+		}
 	}
 }
 

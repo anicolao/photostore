@@ -796,7 +796,7 @@ func (s *Store) Assets(query url.Values) ([]AssetProjection, error) {
 	if err != nil {
 		return nil, err
 	}
-	var assets []AssetProjection
+	assets := []AssetProjection{}
 	for rows.Next() {
 		var asset AssetProjection
 		if err := rows.Scan(&asset.AssetID, &asset.ContentRef, &asset.RepresentativeObjectID, &asset.Filename, &asset.Quality, &asset.Status, &asset.Visibility, &asset.CaptureDate, &asset.CaptureTimeLocal, &asset.CreatedAtMS, &asset.SourceOccurrenceCount); err != nil {
@@ -857,7 +857,7 @@ func (s *Store) AssetSources(assetID string) ([]AssetSourceProjection, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var sources []AssetSourceProjection
+	sources := []AssetSourceProjection{}
 	for rows.Next() {
 		var source AssetSourceProjection
 		if err := rows.Scan(&source.SourceOccurrenceID, &source.StoredObjectID, &source.SourceKind, &source.SourceRootID, &source.Path, &source.RelativePath, &source.ScanID); err != nil {
@@ -874,7 +874,7 @@ func (s *Store) Labels() ([]LabelProjection, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var labels []LabelProjection
+	labels := []LabelProjection{}
 	for rows.Next() {
 		var label LabelProjection
 		if err := rows.Scan(&label.NormalizedLabel, &label.DisplayLabel, &label.AssetCount, &label.LastAppliedAtMS); err != nil {

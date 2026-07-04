@@ -15,9 +15,20 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ---
 
+## The asset browser shows an empty state before any content is acquired.
+
+![The asset browser shows an empty state before any content is acquired.](./screenshots/001-empty-assets.png)
+
+**Verifications:**
+- [x] Assets heading is visible
+- [x] Asset count is zero
+- [x] Assets empty state is visible
+
+---
+
 ## The fixture source root is registered and has never been scanned.
 
-![The fixture source root is registered and has never been scanned.](./screenshots/001-source-registered.png)
+![The fixture source root is registered and has never been scanned.](./screenshots/002-source-registered.png)
 
 **Verifications:**
 - [x] Source count is one
@@ -28,7 +39,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The per-source scan completes with compact progress visible.
 
-![The per-source scan completes with compact progress visible.](./screenshots/002-scan-completed-compact-progress.png)
+![The per-source scan completes with compact progress visible.](./screenshots/003-scan-completed-compact-progress.png)
 
 **Verifications:**
 - [x] Scan job completed
@@ -45,7 +56,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Reloading the dashboard restores the latest completed job status and thumbnail summary.
 
-![Reloading the dashboard restores the latest completed job status and thumbnail summary.](./screenshots/003-completed-job-restored-after-reload.png)
+![Reloading the dashboard restores the latest completed job status and thumbnail summary.](./screenshots/004-completed-job-restored-after-reload.png)
 
 **Verifications:**
 - [x] Completed job status is restored
@@ -55,7 +66,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The dashboard verifies retained duplicates and releases duplicate bytes.
 
-![The dashboard verifies retained duplicates and releases duplicate bytes.](./screenshots/004-duplicates-deduplicated.png)
+![The dashboard verifies retained duplicates and releases duplicate bytes.](./screenshots/005-duplicates-deduplicated.png)
 
 **Verifications:**
 - [x] Deduplication job completed
@@ -68,7 +79,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## A scan row can restore its job status into the status panel.
 
-![A scan row can restore its job status into the status panel.](./screenshots/005-scan-status-selected-from-table.png)
+![A scan row can restore its job status into the status panel.](./screenshots/006-scan-status-selected-from-table.png)
 
 **Verifications:**
 - [x] Selected scan status is visible
@@ -78,7 +89,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The dashboard reports stale thumbnail renderer output and removes it through explicit garbage collection.
 
-![The dashboard reports stale thumbnail renderer output and removes it through explicit garbage collection.](./screenshots/006-thumbnail-garbage-collected.png)
+![The dashboard reports stale thumbnail renderer output and removes it through explicit garbage collection.](./screenshots/007-thumbnail-garbage-collected.png)
 
 **Verifications:**
 - [x] Thumbnail garbage collection job completed
@@ -90,7 +101,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Opening the job log reveals the scrollable acquisition log.
 
-![Opening the job log reveals the scrollable acquisition log.](./screenshots/007-job-log-opened.png)
+![Opening the job log reveals the scrollable acquisition log.](./screenshots/008-job-log-opened.png)
 
 **Verifications:**
 - [x] Job log contains acquisition messages
@@ -100,7 +111,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The acquired count opens a thumbnail grid with image links.
 
-![The acquired count opens a thumbnail grid with image links.](./screenshots/008-acquired-files-drilldown.png)
+![The acquired count opens a thumbnail grid with image links.](./screenshots/009-acquired-files-drilldown.png)
 
 **Verifications:**
 - [x] Photos heading is visible
@@ -114,7 +125,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The image view shows the original image and a readable information side panel.
 
-![The image view shows the original image and a readable information side panel.](./screenshots/009-image-exif-side-panel.png)
+![The image view shows the original image and a readable information side panel.](./screenshots/010-image-exif-side-panel.png)
 
 **Verifications:**
 - [x] Image view renders the photo
@@ -133,7 +144,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The image view can advance to the next photo in the scan order and preserve navigation context.
 
-![The image view can advance to the next photo in the scan order and preserve navigation context.](./screenshots/010-image-next-navigation.png)
+![The image view can advance to the next photo in the scan order and preserve navigation context.](./screenshots/011-image-next-navigation.png)
 
 **Verifications:**
 - [x] The URL changes to another object
@@ -146,7 +157,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The date browser lists years derived from raw EXIF metadata.
 
-![The date browser lists years derived from raw EXIF metadata.](./screenshots/011-photos-by-date-years.png)
+![The date browser lists years derived from raw EXIF metadata.](./screenshots/012-photos-by-date-years.png)
 
 **Verifications:**
 - [x] Photos by date heading is visible
@@ -157,7 +168,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a year lists capture months.
 
-![Selecting a year lists capture months.](./screenshots/012-photos-by-date-months.png)
+![Selecting a year lists capture months.](./screenshots/013-photos-by-date-months.png)
 
 **Verifications:**
 - [x] Selected year heading is visible
@@ -167,7 +178,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a month lists capture days.
 
-![Selecting a month lists capture days.](./screenshots/013-photos-by-date-days.png)
+![Selecting a month lists capture days.](./screenshots/014-photos-by-date-days.png)
 
 **Verifications:**
 - [x] Selected month heading is visible
@@ -177,7 +188,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## Selecting a capture day opens a thumbnail grid for that date.
 
-![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/014-photos-by-date-thumbnails.png)
+![Selecting a capture day opens a thumbnail grid for that date.](./screenshots/015-photos-by-date-thumbnails.png)
 
 **Verifications:**
 - [x] Selected capture day heading is visible
@@ -189,7 +200,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The metadata review page shows extraction results and photos where no metadata was found.
 
-![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/015-metadata-review.png)
+![The metadata review page shows extraction results and photos where no metadata was found.](./screenshots/016-metadata-review.png)
 
 **Verifications:**
 - [x] Metadata heading is visible
@@ -208,7 +219,7 @@ Register a source root, scan it, inspect progress, drill into thumbnails, browse
 
 ## The dashboard can trigger a metadata refresh for photos without recorded metadata results.
 
-![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/016-metadata-refresh-triggered.png)
+![The dashboard can trigger a metadata refresh for photos without recorded metadata results.](./screenshots/017-metadata-refresh-triggered.png)
 
 **Verifications:**
 - [x] Metadata refresh job completed

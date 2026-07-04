@@ -70,7 +70,7 @@
     <div>
       <a href="/">Dashboard</a>
       <h1>Assets</h1>
-      <p>{assets.length} assets</p>
+      <p data-testid="asset-count">{assets.length} assets</p>
     </div>
   </header>
 
