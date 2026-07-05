@@ -28,7 +28,7 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
     [0x9003, '2020:10:24 13:14:15'],
     [0xa002, '1000'],
     [0xa003, '2000']
-  ]);
+  ], { orientation: 6 });
   const triageSmall = jpegWithEXIF(fixtureJPEG, [
     [0x9003, '2019:09:23 12:13:14'],
     [0xa002, '640'],
@@ -123,10 +123,10 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
         await expect(page.getByTestId('asset-context-strip')).toBeVisible();
         await expect(page.getByTestId('asset-strip-current')).toBeVisible();
         await expect(page.getByTestId('asset-strip-current')).toHaveClass(/quality-unrated/);
-        await expect(page.getByTestId('asset-strip-current')).toHaveAttribute('style', /aspect-ratio:\s*2000 \/ 1000/);
+        await expect(page.getByTestId('asset-strip-current')).toHaveAttribute('style', /aspect-ratio:\s*24 \/ 18/);
         await expect(page.getByTestId('asset-strip-link')).toHaveCount(2);
         await expect(page.getByTestId('asset-strip-link').first()).toHaveAttribute('href', /\/assets\/asset_.+has_date=1.+min_megapixels=1/);
-        await expect(page.getByTestId('asset-strip-link').last()).toHaveAttribute('style', /aspect-ratio:\s*1000 \/ 2000/);
+        await expect(page.getByTestId('asset-strip-link').last()).toHaveAttribute('style', /aspect-ratio:\s*18 \/ 24/);
         await expect(page.getByTestId('asset-context-strip').locator('img')).toHaveCount(3);
         const stripFit = await page.evaluate(() => {
           const current = document.querySelector('[data-testid="asset-strip-current"]');
@@ -236,14 +236,14 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
   tester.generateDocs();
 });
 
-function jpegWithEXIF(base: Buffer, fields: Array<[number, string]>) {
-  const payload = exifPayload(fields);
+function jpegWithEXIF(base: Buffer, fields: Array<[number, string]>, options: { orientation?: number } = {}) {
+  const payload = exifPayload(fields, options);
   const segmentLength = payload.length + 2;
   const app1 = Buffer.from([0xff, 0xe1, segmentLength >> 8, segmentLength & 0xff]);
   return Buffer.concat([base.subarray(0, 2), app1, payload, base.subarray(2)]);
 }
 
-function exifPayload(fields: Array<[number, string]>) {
+function exifPayload(fields: Array<[number, string]>, options: { orientation?: number } = {}) {
   const tiffParts: Buffer[] = [];
   const dataParts: Buffer[] = [];
   const writeUInt16 = (value: number) => {
@@ -260,15 +260,23 @@ function exifPayload(fields: Array<[number, string]>) {
   tiffParts.push(Buffer.from('II'));
   writeUInt16(42);
   writeUInt32(8);
-  writeUInt16(1);
+  const ifd0EntryCount = options.orientation === undefined ? 1 : 2;
+  writeUInt16(ifd0EntryCount);
   writeUInt16(0x8769);
   writeUInt16(4);
   writeUInt32(1);
-  const ifd0Size = 2 + 12 + 4;
+  const ifd0Size = 2 + ifd0EntryCount * 12 + 4;
   const exifIFDOffset = 8 + ifd0Size;
   const exifIFDSize = 2 + fields.length * 12 + 4;
   const dataStart = exifIFDOffset + exifIFDSize;
   writeUInt32(exifIFDOffset);
+  if (options.orientation !== undefined) {
+    writeUInt16(0x0112);
+    writeUInt16(3);
+    writeUInt32(1);
+    writeUInt16(options.orientation);
+    writeUInt16(0);
+  }
   writeUInt32(0);
   writeUInt16(fields.length);
 

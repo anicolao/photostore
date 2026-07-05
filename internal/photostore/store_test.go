@@ -245,7 +245,7 @@ func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
 	storePath := filepath.Join(root, "store")
 	sourcePath := filepath.Join(root, "source")
 	mustMkdir(t, sourcePath)
-	oldLarge := jpegWithEXIF(t, map[uint16]string{
+	oldLarge := jpegWithEXIFOnBase(t, twoColorJPEG(t, 18, 24), map[uint16]string{
 		0x9003: "2010:01:02 03:04:05",
 		0xa002: "2000",
 		0xa003: "1000",
@@ -289,12 +289,6 @@ func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
 	if large.Total != 1 || len(large.Assets) != 1 || large.Assets[0].Filename != "OLD_LARGE.JPG" {
 		t.Fatalf("large dated assets = %#v, want OLD_LARGE.JPG only", large)
 	}
-	if _, err := st.DB.Exec(`
-		update content_metadata
-		set fields_json = json_set(fields_json, '$.orientation.raw', '6')
-		where content_ref = ?`, large.Assets[0].ContentRef); err != nil {
-		t.Fatal(err)
-	}
 	nav, err := st.AssetNavigation(large.Assets[0].AssetID, url.Values{"has_date": []string{"1"}, "sort": []string{"date_asc"}})
 	if err != nil {
 		t.Fatal(err)
@@ -308,8 +302,8 @@ func TestAssetsFilterByDateMegapixelsAndSortByDate(t *testing.T) {
 	if nav.Current.ThumbnailURL == "" || nav.Window[0].ThumbnailURL == "" || nav.Window[1].ThumbnailURL == "" {
 		t.Fatalf("navigation thumbnails missing: %#v", nav)
 	}
-	if nav.Current.Quality != "Unrated" || nav.Window[0].Width != 1000 || nav.Window[0].Height != 2000 {
-		t.Fatalf("navigation item metadata = %#v, want unrated oriented 1000x2000", nav.Window[0])
+	if nav.Current.Quality != "Unrated" || nav.Window[0].Width != 18 || nav.Window[0].Height != 24 {
+		t.Fatalf("navigation item metadata = %#v, want unrated stored display dimensions 18x24", nav.Window[0])
 	}
 }
 

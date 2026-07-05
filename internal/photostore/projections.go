@@ -241,6 +241,7 @@ type AssetNavigationItem struct {
 	ThumbnailURL string `json:"thumbnail_url"`
 	Width        int    `json:"width,omitempty"`
 	Height       int    `json:"height,omitempty"`
+	storageKey   string
 }
 
 type LabelProjection struct {
@@ -1033,10 +1034,9 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 			coalesce(a.original_filename, ''),
 			coalesce(aq.quality, 'Unrated'),
 			a.representative_stored_object_id,
-			coalesce(cast(json_extract(cm.fields_json, '$.pixel_x_dimension.raw') as integer), 0),
-			coalesce(cast(json_extract(cm.fields_json, '$.pixel_y_dimension.raw') as integer), 0),
-			coalesce(cast(json_extract(cm.fields_json, '$.orientation.raw') as integer), 1)
+			coalesce(rep.acquired_storage_key, '')
 		%s
+		left join stored_objects rep on rep.stored_object_id = a.representative_stored_object_id
 		where %s
 		order by %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), parts.Args...)
 	if err != nil {
@@ -1047,18 +1047,36 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 	for rows.Next() {
 		var item AssetNavigationItem
 		var representativeObjectID string
-		var rawWidth, rawHeight, orientation int
-		if err := rows.Scan(&item.AssetID, &item.Filename, &item.Quality, &representativeObjectID, &rawWidth, &rawHeight, &orientation); err != nil {
+		if err := rows.Scan(&item.AssetID, &item.Filename, &item.Quality, &representativeObjectID, &item.storageKey); err != nil {
 			return AssetNavigationProjection{}, err
 		}
-		item.Width, item.Height = orientedDimensions(rawWidth, rawHeight, orientation)
 		item.ThumbnailURL = "/api/objects/" + representativeObjectID + "/thumbnail"
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return AssetNavigationProjection{}, err
 	}
-	return assetNavigationFromItems(assetID, parts.Label, nextQuery, items)
+	navigation, err := assetNavigationFromItems(assetID, parts.Label, nextQuery, items)
+	if err != nil {
+		return AssetNavigationProjection{}, err
+	}
+	s.fillAssetNavigationDimensions(&navigation)
+	return navigation, nil
+}
+
+func (s *Store) fillAssetNavigationDimensions(navigation *AssetNavigationProjection) {
+	fill := func(item *AssetNavigationItem) {
+		if item == nil || item.storageKey == "" {
+			return
+		}
+		item.Width, item.Height = s.displayDimensionsForStorageKey(item.storageKey)
+	}
+	fill(&navigation.Current)
+	fill(navigation.Previous)
+	fill(navigation.Next)
+	for i := range navigation.Window {
+		fill(&navigation.Window[i])
+	}
 }
 
 func assetNavigationFromItems(assetID, label string, query url.Values, items []AssetNavigationItem) (AssetNavigationProjection, error) {
@@ -1415,6 +1433,15 @@ func (s *Store) dimensionsForStorageKey(storageKey string) (int, int) {
 		return 0, 0
 	}
 	return width, height
+}
+
+func (s *Store) displayDimensionsForStorageKey(storageKey string) (int, int) {
+	path := filepath.Join(s.Root, filepath.FromSlash(storageKey))
+	width, height, err := jpegDimensions(path)
+	if err != nil {
+		return 0, 0
+	}
+	return orientedDimensions(width, height, jpegOrientation(path))
 }
 
 type StoredObjectFile struct {
