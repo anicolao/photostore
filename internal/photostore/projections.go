@@ -1034,7 +1034,8 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 			coalesce(aq.quality, 'Unrated'),
 			a.representative_stored_object_id,
 			coalesce(cast(json_extract(cm.fields_json, '$.pixel_x_dimension.raw') as integer), 0),
-			coalesce(cast(json_extract(cm.fields_json, '$.pixel_y_dimension.raw') as integer), 0)
+			coalesce(cast(json_extract(cm.fields_json, '$.pixel_y_dimension.raw') as integer), 0),
+			coalesce(cast(json_extract(cm.fields_json, '$.orientation.raw') as integer), 1)
 		%s
 		where %s
 		order by %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), parts.Args...)
@@ -1046,9 +1047,11 @@ func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigati
 	for rows.Next() {
 		var item AssetNavigationItem
 		var representativeObjectID string
-		if err := rows.Scan(&item.AssetID, &item.Filename, &item.Quality, &representativeObjectID, &item.Width, &item.Height); err != nil {
+		var rawWidth, rawHeight, orientation int
+		if err := rows.Scan(&item.AssetID, &item.Filename, &item.Quality, &representativeObjectID, &rawWidth, &rawHeight, &orientation); err != nil {
 			return AssetNavigationProjection{}, err
 		}
+		item.Width, item.Height = orientedDimensions(rawWidth, rawHeight, orientation)
 		item.ThumbnailURL = "/api/objects/" + representativeObjectID + "/thumbnail"
 		items = append(items, item)
 	}
