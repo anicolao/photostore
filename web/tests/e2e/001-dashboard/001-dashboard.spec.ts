@@ -38,6 +38,17 @@ test('dashboard loads and scans a source root', async ({ page }, testInfo) => {
     ]
   });
 
+  await page.getByTestId('assets-link').click();
+  await tester.step('empty-assets', {
+    description: 'The asset browser shows an empty state before any content is acquired.',
+    verifications: [
+      { spec: 'Assets heading is visible', check: async () => await expect(page.getByRole('heading', { name: 'Assets' })).toBeVisible() },
+      { spec: 'Asset count is zero', check: async () => await expect(page.getByTestId('asset-count')).toHaveText('0 assets') },
+      { spec: 'Assets empty state is visible', check: async () => await expect(page.getByTestId('assets-empty')).toBeVisible() }
+    ]
+  });
+  await page.getByRole('link', { name: 'Dashboard' }).click();
+
   const source = '/tmp/photostore-e2e-source';
   rmSync(source, { recursive: true, force: true });
   mkdirSync(source, { recursive: true });

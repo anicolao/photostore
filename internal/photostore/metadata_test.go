@@ -330,7 +330,11 @@ func TestMetadataMismatchDetectedForDuplicateContentObservation(t *testing.T) {
 
 func jpegWithEXIF(t *testing.T, fields map[uint16]string) []byte {
 	t.Helper()
-	base := testJPEG(t)
+	return jpegWithEXIFOnBase(t, testJPEG(t), fields)
+}
+
+func jpegWithEXIFOnBase(t *testing.T, base []byte, fields map[uint16]string) []byte {
+	t.Helper()
 	payload := exifPayload(t, fields)
 	segmentLen := len(payload) + 2
 	app1 := []byte{0xff, 0xe1, byte(segmentLen >> 8), byte(segmentLen)}

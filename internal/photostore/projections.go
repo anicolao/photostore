@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -145,6 +146,109 @@ type ObjectNavigationItem struct {
 	StoredObjectID string `json:"stored_object_id"`
 	Filename       string `json:"filename"`
 	ViewURL        string `json:"view_url"`
+}
+
+type AssetProjection struct {
+	AssetID                string   `json:"asset_id"`
+	ContentRef             string   `json:"content_ref"`
+	RepresentativeObjectID string   `json:"representative_stored_object_id"`
+	Filename               string   `json:"filename"`
+	Quality                string   `json:"quality"`
+	Status                 string   `json:"status"`
+	Visibility             string   `json:"visibility"`
+	Labels                 []string `json:"labels"`
+	CaptureDate            string   `json:"capture_date,omitempty"`
+	CaptureTimeLocal       string   `json:"capture_time_local,omitempty"`
+	Camera                 string   `json:"camera,omitempty"`
+	ViewURL                string   `json:"view_url"`
+	BytesURL               string   `json:"bytes_url"`
+	ThumbnailURL           string   `json:"thumbnail_url"`
+	SourceOccurrenceCount  int      `json:"source_occurrence_count"`
+	CreatedAtMS            int64    `json:"created_at_ms"`
+}
+
+func (a AssetProjection) MarshalJSON() ([]byte, error) {
+	type assetAlias AssetProjection
+	if a.Labels == nil {
+		a.Labels = []string{}
+	}
+	return json.Marshal(assetAlias(a))
+}
+
+type AssetPageProjection struct {
+	Assets     []AssetProjection `json:"assets"`
+	Total      int               `json:"total"`
+	Limit      int               `json:"limit"`
+	Offset     int               `json:"offset"`
+	NextOffset *int              `json:"next_offset,omitempty"`
+	PrevOffset *int              `json:"prev_offset,omitempty"`
+}
+
+func (p AssetPageProjection) MarshalJSON() ([]byte, error) {
+	type pageAlias AssetPageProjection
+	if p.Assets == nil {
+		p.Assets = []AssetProjection{}
+	}
+	return json.Marshal(pageAlias(p))
+}
+
+type AssetDetailProjection struct {
+	AssetProjection
+	Sources []AssetSourceProjection `json:"sources"`
+}
+
+func (d AssetDetailProjection) MarshalJSON() ([]byte, error) {
+	type assetAlias AssetProjection
+	if d.Labels == nil {
+		d.Labels = []string{}
+	}
+	if d.Sources == nil {
+		d.Sources = []AssetSourceProjection{}
+	}
+	return json.Marshal(struct {
+		assetAlias
+		Sources []AssetSourceProjection `json:"sources"`
+	}{
+		assetAlias: assetAlias(d.AssetProjection),
+		Sources:    d.Sources,
+	})
+}
+
+type AssetSourceProjection struct {
+	SourceOccurrenceID string `json:"source_occurrence_id"`
+	StoredObjectID     string `json:"stored_object_id"`
+	SourceKind         string `json:"source_kind"`
+	SourceRootID       string `json:"source_root_id,omitempty"`
+	Path               string `json:"path"`
+	RelativePath       string `json:"relative_path"`
+	ScanID             string `json:"scan_id"`
+}
+
+type AssetNavigationProjection struct {
+	List     string                `json:"list"`
+	Label    string                `json:"label"`
+	Current  AssetNavigationItem   `json:"current"`
+	Previous *AssetNavigationItem  `json:"previous"`
+	Next     *AssetNavigationItem  `json:"next"`
+	Window   []AssetNavigationItem `json:"window"`
+}
+
+type AssetNavigationItem struct {
+	AssetID      string `json:"asset_id"`
+	Filename     string `json:"filename"`
+	Quality      string `json:"quality"`
+	ViewURL      string `json:"view_url"`
+	ThumbnailURL string `json:"thumbnail_url"`
+	Width        int    `json:"width,omitempty"`
+	Height       int    `json:"height,omitempty"`
+	storageKey   string
+}
+
+type LabelProjection struct {
+	NormalizedLabel string `json:"normalized_label"`
+	DisplayLabel    string `json:"display_label"`
+	AssetCount      int    `json:"asset_count"`
+	LastAppliedAtMS int64  `json:"last_applied_at_ms"`
 }
 
 type DatedPhotoResponse struct {
@@ -702,6 +806,497 @@ func (s *Store) MetadataMissing() ([]MetadataPhotoProjection, error) {
 	return photos, rows.Err()
 }
 
+func (s *Store) Assets(query url.Values) (AssetPageProjection, error) {
+	parts := assetQueryParts(query)
+	limit := boundedQueryInt(query.Get("limit"), 60, 1, 200)
+	offset := boundedQueryInt(query.Get("offset"), 0, 0, 1_000_000_000)
+	var total int
+	if err := s.DB.QueryRow(fmt.Sprintf(`
+		%s
+		select count(*)
+		%s
+		where %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL), parts.Args...).Scan(&total); err != nil {
+		return AssetPageProjection{}, err
+	}
+	pageArgs := append(append([]any{}, parts.Args...), limit, offset)
+	rows, err := s.DB.Query(fmt.Sprintf(`
+		%s
+		select a.asset_id,
+			a.content_ref,
+			a.representative_stored_object_id,
+			coalesce(a.original_filename, ''),
+			coalesce(aq.quality, 'Unrated'),
+			coalesce(ast.status, 'Triage'),
+			coalesce(av.visibility, 'Normal'),
+			coalesce(pct.capture_date, ''),
+			coalesce(pct.capture_time_local, ''),
+			coalesce(a.created_at_ms, 0),
+			(select count(*) from source_content_links scl where scl.content_ref = a.content_ref)
+		%s
+		where %s
+		order by %s
+		limit ? offset ?`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), pageArgs...)
+	if err != nil {
+		return AssetPageProjection{}, err
+	}
+	assets := []AssetProjection{}
+	for rows.Next() {
+		var asset AssetProjection
+		if err := rows.Scan(&asset.AssetID, &asset.ContentRef, &asset.RepresentativeObjectID, &asset.Filename, &asset.Quality, &asset.Status, &asset.Visibility, &asset.CaptureDate, &asset.CaptureTimeLocal, &asset.CreatedAtMS, &asset.SourceOccurrenceCount); err != nil {
+			rows.Close()
+			return AssetPageProjection{}, err
+		}
+		assets = append(assets, asset)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return AssetPageProjection{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return AssetPageProjection{}, err
+	}
+	if err := s.hydrateAssets(&assets); err != nil {
+		return AssetPageProjection{}, err
+	}
+	page := AssetPageProjection{Assets: assets, Total: total, Limit: limit, Offset: offset}
+	if offset+limit < total {
+		next := offset + limit
+		page.NextOffset = &next
+	}
+	if offset > 0 {
+		prev := offset - limit
+		if prev < 0 {
+			prev = 0
+		}
+		page.PrevOffset = &prev
+	}
+	return page, nil
+}
+
+const assetFromSQL = `
+	from assets a
+	left join asset_quality aq on aq.asset_id = a.asset_id
+	left join asset_status ast on ast.asset_id = a.asset_id
+	left join asset_visibility av on av.asset_id = a.asset_id
+	left join capture pct on pct.content_ref = a.content_ref
+	left join content_metadata cm on cm.content_ref = a.content_ref
+		and cm.extractor_name = ?
+		and cm.extractor_version = ?`
+
+type assetQuery struct {
+	WithSQL  string
+	WhereSQL string
+	OrderSQL string
+	Args     []any
+	Label    string
+}
+
+func assetQueryParts(query url.Values) assetQuery {
+	where := []string{"1 = 1"}
+	args := []any{metadataExtractorName, metadataExtractorVersion}
+	if assetID := query.Get("asset_id"); assetID != "" {
+		where = append(where, "a.asset_id = ?")
+		args = append(args, assetID)
+	}
+	if qualities := nonEmptyValues(query["quality"]); len(qualities) > 0 {
+		clause, clauseArgs := inStringClause("coalesce(aq.quality, 'Unrated')", qualities)
+		where = append(where, clause)
+		args = append(args, clauseArgs...)
+	}
+	if statuses := nonEmptyValues(query["status"]); len(statuses) > 0 {
+		clause, clauseArgs := inStringClause("coalesce(ast.status, 'Triage')", statuses)
+		where = append(where, clause)
+		args = append(args, clauseArgs...)
+	}
+	if visibilities := nonEmptyValues(query["visibility"]); len(visibilities) > 0 {
+		clause, clauseArgs := inStringClause("coalesce(av.visibility, 'Normal')", visibilities)
+		where = append(where, clause)
+		args = append(args, clauseArgs...)
+	}
+	if labels := normalizedQueryLabels(query["label"]); len(labels) > 0 {
+		clause, clauseArgs := inStringClause("filter_label.normalized_label", labels)
+		where = append(where, `exists (
+			select 1 from asset_labels filter_label
+			where filter_label.asset_id = a.asset_id and `+clause+`
+		)`)
+		args = append(args, clauseArgs...)
+	}
+	if truthyQuery(query.Get("has_date")) {
+		where = append(where, "pct.capture_date is not null and pct.capture_date != ''")
+	}
+	if truthyQuery(query.Get("min_megapixels")) {
+		where = append(where, `cast(json_extract(cm.fields_json, '$.pixel_x_dimension.raw') as integer) *
+			cast(json_extract(cm.fields_json, '$.pixel_y_dimension.raw') as integer) >= ?`)
+		args = append(args, 1_000_000)
+	}
+	order := "coalesce(pct.capture_time_local, ''), a.original_filename, a.asset_id"
+	label := "Assets by date ascending"
+	switch query.Get("sort") {
+	case "date_desc":
+		order = "coalesce(pct.capture_time_local, '') desc, a.original_filename, a.asset_id"
+		label = "Assets by date descending"
+	}
+	return assetQuery{
+		WithSQL: `with capture as (
+			select content_ref, min(capture_date) as capture_date, min(capture_time_local) as capture_time_local
+			from photo_capture_times
+			group by content_ref
+		)`,
+		WhereSQL: strings.Join(where, " and "),
+		OrderSQL: order,
+		Args:     args,
+		Label:    label,
+	}
+}
+
+func nonEmptyValues(values []string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizedQueryLabels(values []string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		normalized := normalizeAssetLabel(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func inStringClause(expr string, values []string) (string, []any) {
+	placeholders := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		args[i] = value
+	}
+	return fmt.Sprintf("%s in (%s)", expr, strings.Join(placeholders, ",")), args
+}
+
+func truthyQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) Asset(assetID string) (AssetDetailProjection, error) {
+	page, err := s.Assets(url.Values{"asset_id": []string{assetID}, "limit": []string{"1"}})
+	if err != nil {
+		return AssetDetailProjection{}, err
+	}
+	if len(page.Assets) == 0 {
+		return AssetDetailProjection{}, sql.ErrNoRows
+	}
+	sources, err := s.AssetSources(assetID)
+	if err != nil {
+		return AssetDetailProjection{}, err
+	}
+	return AssetDetailProjection{AssetProjection: page.Assets[0], Sources: sources}, nil
+}
+
+func (s *Store) AssetNavigation(assetID string, query url.Values) (AssetNavigationProjection, error) {
+	nextQuery := url.Values{}
+	for key, values := range query {
+		if key == "limit" || key == "offset" {
+			continue
+		}
+		for _, value := range values {
+			nextQuery.Add(key, value)
+		}
+	}
+	parts := assetQueryParts(nextQuery)
+	rows, err := s.DB.Query(fmt.Sprintf(`
+		%s
+		select a.asset_id,
+			coalesce(a.original_filename, ''),
+			coalesce(aq.quality, 'Unrated'),
+			a.representative_stored_object_id,
+			coalesce(rep.acquired_storage_key, '')
+		%s
+		left join stored_objects rep on rep.stored_object_id = a.representative_stored_object_id
+		where %s
+		order by %s`, parts.WithSQL, assetFromSQL, parts.WhereSQL, parts.OrderSQL), parts.Args...)
+	if err != nil {
+		return AssetNavigationProjection{}, err
+	}
+	defer rows.Close()
+	items := []AssetNavigationItem{}
+	for rows.Next() {
+		var item AssetNavigationItem
+		var representativeObjectID string
+		if err := rows.Scan(&item.AssetID, &item.Filename, &item.Quality, &representativeObjectID, &item.storageKey); err != nil {
+			return AssetNavigationProjection{}, err
+		}
+		item.ThumbnailURL = "/api/objects/" + representativeObjectID + "/thumbnail"
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return AssetNavigationProjection{}, err
+	}
+	navigation, err := assetNavigationFromItems(assetID, parts.Label, nextQuery, items)
+	if err != nil {
+		return AssetNavigationProjection{}, err
+	}
+	s.fillAssetNavigationDimensions(&navigation)
+	return navigation, nil
+}
+
+func (s *Store) fillAssetNavigationDimensions(navigation *AssetNavigationProjection) {
+	fill := func(item *AssetNavigationItem) {
+		if item == nil || item.storageKey == "" {
+			return
+		}
+		item.Width, item.Height = s.displayDimensionsForStorageKey(item.storageKey)
+	}
+	fill(&navigation.Current)
+	fill(navigation.Previous)
+	fill(navigation.Next)
+	for i := range navigation.Window {
+		fill(&navigation.Window[i])
+	}
+}
+
+func assetNavigationFromItems(assetID, label string, query url.Values, items []AssetNavigationItem) (AssetNavigationProjection, error) {
+	currentIndex := -1
+	for i := range items {
+		items[i].ViewURL = assetViewURLWithContext(items[i].AssetID, query)
+		if items[i].AssetID == assetID {
+			currentIndex = i
+		}
+	}
+	if currentIndex < 0 {
+		return AssetNavigationProjection{}, sql.ErrNoRows
+	}
+	out := AssetNavigationProjection{
+		List:    "assets",
+		Label:   label,
+		Current: items[currentIndex],
+	}
+	windowStart := currentIndex - 3
+	if windowStart < 0 {
+		windowStart = 0
+	}
+	windowEnd := windowStart + 7
+	if windowEnd > len(items) {
+		windowEnd = len(items)
+		windowStart = windowEnd - 7
+		if windowStart < 0 {
+			windowStart = 0
+		}
+	}
+	out.Window = append(out.Window, items[windowStart:windowEnd]...)
+	if currentIndex > 0 {
+		prev := items[currentIndex-1]
+		out.Previous = &prev
+	}
+	if currentIndex+1 < len(items) {
+		next := items[currentIndex+1]
+		out.Next = &next
+	}
+	return out, nil
+}
+
+func assetViewURLWithContext(assetID string, query url.Values) string {
+	next := url.Values{}
+	for key, values := range query {
+		for _, value := range values {
+			next.Add(key, value)
+		}
+	}
+	encoded := next.Encode()
+	if encoded == "" {
+		return "/assets/" + assetID
+	}
+	return "/assets/" + assetID + "?" + encoded
+}
+
+func (s *Store) AssetSources(assetID string) ([]AssetSourceProjection, error) {
+	var contentRef string
+	if err := s.DB.QueryRow(`select content_ref from assets where asset_id = ?`, assetID).Scan(&contentRef); err != nil {
+		return nil, err
+	}
+	rows, err := s.DB.Query(`
+		select so.source_occurrence_id,
+			coalesce(so.stored_object_id, ''),
+			so.source_kind,
+			coalesce(so.source_root_id, ''),
+			so.path,
+			so.relative_path,
+			so.scan_id
+		from source_content_links scl
+		join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+		where scl.content_ref = ?
+		order by so.relative_path, so.path`, contentRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sources := []AssetSourceProjection{}
+	for rows.Next() {
+		var source AssetSourceProjection
+		if err := rows.Scan(&source.SourceOccurrenceID, &source.StoredObjectID, &source.SourceKind, &source.SourceRootID, &source.Path, &source.RelativePath, &source.ScanID); err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	return sources, rows.Err()
+}
+
+func (s *Store) Labels() ([]LabelProjection, error) {
+	rows, err := s.DB.Query(`select normalized_label, display_label, asset_count, last_applied_at_ms from label_catalog order by display_label`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	labels := []LabelProjection{}
+	for rows.Next() {
+		var label LabelProjection
+		if err := rows.Scan(&label.NormalizedLabel, &label.DisplayLabel, &label.AssetCount, &label.LastAppliedAtMS); err != nil {
+			return nil, err
+		}
+		labels = append(labels, label)
+	}
+	return labels, rows.Err()
+}
+
+func boundedQueryInt(raw string, fallback, min, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+func (s *Store) hydrateAssets(assets *[]AssetProjection) error {
+	if len(*assets) == 0 {
+		return nil
+	}
+	assetIDs := make([]string, 0, len(*assets))
+	contentRefs := make([]string, 0, len(*assets))
+	assetIndex := map[string]int{}
+	contentRefSet := map[string]struct{}{}
+	for i := range *assets {
+		asset := &(*assets)[i]
+		asset.ViewURL = "/objects/" + asset.RepresentativeObjectID
+		asset.BytesURL = "/api/objects/" + asset.RepresentativeObjectID + "/bytes"
+		asset.ThumbnailURL = "/api/objects/" + asset.RepresentativeObjectID + "/thumbnail"
+		asset.Labels = []string{}
+		assetIDs = append(assetIDs, asset.AssetID)
+		assetIndex[asset.AssetID] = i
+		if _, ok := contentRefSet[asset.ContentRef]; !ok {
+			contentRefs = append(contentRefs, asset.ContentRef)
+			contentRefSet[asset.ContentRef] = struct{}{}
+		}
+	}
+	if err := s.hydrateAssetLabels(assets, assetIDs, assetIndex); err != nil {
+		return err
+	}
+	return s.hydrateAssetCameras(assets, contentRefs)
+}
+
+func (s *Store) hydrateAssetLabels(assets *[]AssetProjection, assetIDs []string, assetIndex map[string]int) error {
+	query, args := inQuery(`select asset_id, display_label from asset_labels where asset_id in (%s) order by display_label`, assetIDs)
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var assetID, label string
+		if err := rows.Scan(&assetID, &label); err != nil {
+			return err
+		}
+		if index, ok := assetIndex[assetID]; ok {
+			(*assets)[index].Labels = append((*assets)[index].Labels, label)
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) hydrateAssetCameras(assets *[]AssetProjection, contentRefs []string) error {
+	query, args := inQuery(`
+		select content_ref, fields_json
+		from content_metadata
+		where extractor_name = ? and extractor_version = ? and content_ref in (%s)`, contentRefs)
+	args = append([]any{metadataExtractorName, metadataExtractorVersion}, args...)
+	rows, err := s.DB.Query(query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	cameras := map[string]string{}
+	for rows.Next() {
+		var contentRef, fieldsJSON string
+		if err := rows.Scan(&contentRef, &fieldsJSON); err != nil {
+			return err
+		}
+		var fields map[string]map[string]string
+		if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+			continue
+		}
+		make := metadataRaw(fields, "make")
+		model := metadataRaw(fields, "model")
+		cameras[contentRef] = strings.TrimSpace(strings.TrimSpace(make + " " + model))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range *assets {
+		(*assets)[i].Camera = cameras[(*assets)[i].ContentRef]
+	}
+	return nil
+}
+
+func inQuery(format string, values []string) (string, []any) {
+	placeholders := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, value := range values {
+		placeholders[i] = "?"
+		args[i] = value
+	}
+	return fmt.Sprintf(format, strings.Join(placeholders, ",")), args
+}
+
+func metadataRaw(fields map[string]map[string]string, key string) string {
+	field, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	return field["raw"]
+}
+
 func (s *Store) ObjectNavigation(storedObjectID string, query url.Values) (ObjectNavigationProjection, error) {
 	list := query.Get("list")
 	var items []ObjectNavigationItem
@@ -838,6 +1433,15 @@ func (s *Store) dimensionsForStorageKey(storageKey string) (int, int) {
 		return 0, 0
 	}
 	return width, height
+}
+
+func (s *Store) displayDimensionsForStorageKey(storageKey string) (int, int) {
+	path := filepath.Join(s.Root, filepath.FromSlash(storageKey))
+	width, height, err := jpegDimensions(path)
+	if err != nil {
+		return 0, 0
+	}
+	return orientedDimensions(width, height, jpegOrientation(path))
 }
 
 type StoredObjectFile struct {

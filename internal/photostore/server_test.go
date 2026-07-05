@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -32,6 +33,43 @@ func TestCloneJobSerializesEmptyProgressArray(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"progress":[]`) {
 		t.Fatalf("job JSON missing empty progress array: %s", raw)
+	}
+}
+
+func TestJobSerializesEmptyProgressArray(t *testing.T) {
+	raw, err := json.Marshal(Job{JobID: "job_test", Kind: "source_scan", Status: "running", StartedAtMS: 1710504000000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"progress":null`) {
+		t.Fatalf("job JSON has null progress: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"progress":[]`) {
+		t.Fatalf("job JSON missing empty progress array: %s", raw)
+	}
+}
+
+func TestAssetProjectionsSerializeEmptyArrays(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{name: "asset labels", value: AssetProjection{AssetID: "asset_test"}, want: `"labels":[]`},
+		{name: "page assets", value: AssetPageProjection{}, want: `"assets":[]`},
+		{name: "detail labels", value: AssetDetailProjection{AssetProjection: AssetProjection{AssetID: "asset_test"}}, want: `"labels":[]`},
+		{name: "detail sources", value: AssetDetailProjection{AssetProjection: AssetProjection{AssetID: "asset_test"}}, want: `"sources":[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), tt.want) {
+				t.Fatalf("JSON = %s, want %s", raw, tt.want)
+			}
+		})
 	}
 }
 
@@ -120,6 +158,52 @@ func TestServerPrunesOnlyOldCompletedJobs(t *testing.T) {
 	}
 }
 
+func TestServerAssetCollectionsSerializeEmptyArrays(t *testing.T) {
+	st, err := Init(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ts := httptest.NewServer(NewServer(st, ServerOptions{}))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/api/assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = bytes.TrimSpace(body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/assets status = %d, want 200; body = %s", res.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte(`"assets":[]`)) {
+		t.Fatalf("GET /api/assets body = %s, want empty assets array", body)
+	}
+
+	for _, path := range []string{"/api/labels"} {
+		res, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body = bytes.TrimSpace(body)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status = %d, want 200; body = %s", path, res.StatusCode, body)
+		}
+		if string(body) != "[]" {
+			t.Fatalf("GET %s body = %s, want []", path, body)
+		}
+	}
+}
+
 func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	root := t.TempDir()
 	storePath := filepath.Join(root, "store")
@@ -191,6 +275,55 @@ func TestServerDashboardAPIsAndSourceScanJob(t *testing.T) {
 	}
 	if !strings.Contains(nav.Next.ViewURL, "list=scan") || !strings.Contains(nav.Next.ViewURL, "scan_id="+*done.ResultRef) {
 		t.Fatalf("navigation next url = %q, want scan context", nav.Next.ViewURL)
+	}
+	var assets []AssetProjection
+	var assetsPage AssetPageProjection
+	getJSON(t, ts.URL+"/api/assets?limit=1", &assetsPage)
+	assets = assetsPage.Assets
+	if assetsPage.Total != 1 || len(assets) != 1 {
+		t.Fatalf("assets page = %#v, want one unique content asset", assetsPage)
+	}
+	if assets[0].Quality != "Unrated" || assets[0].Status != "Triage" || assets[0].Visibility != "Normal" {
+		t.Fatalf("asset defaults = quality %s status %s visibility %s", assets[0].Quality, assets[0].Status, assets[0].Visibility)
+	}
+	if assets[0].SourceOccurrenceCount != 2 {
+		t.Fatalf("asset source occurrences = %d, want 2", assets[0].SourceOccurrenceCount)
+	}
+	var detail AssetDetailProjection
+	getJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID, &detail)
+	if detail.AssetID != assets[0].AssetID || len(detail.Sources) != 2 {
+		t.Fatalf("asset detail = %#v, want matching asset with two sources", detail)
+	}
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/quality", map[string]string{"quality": "Best"}, http.StatusOK)
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/status", map[string]string{"status": "Reviewed"}, http.StatusOK)
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/visibility", map[string]string{"visibility": "Private"}, http.StatusOK)
+	postJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/labels", map[string]string{"label": "Family"}, http.StatusOK)
+	getJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID, &detail)
+	if detail.Quality != "Best" || detail.Status != "Reviewed" || detail.Visibility != "Private" {
+		t.Fatalf("asset triage = quality %s status %s visibility %s", detail.Quality, detail.Status, detail.Visibility)
+	}
+	if len(detail.Labels) != 1 || detail.Labels[0] != "Family" {
+		t.Fatalf("asset labels = %#v, want Family", detail.Labels)
+	}
+	var privateAssetsPage AssetPageProjection
+	getJSON(t, ts.URL+"/api/assets?quality=Best&status=Reviewed&visibility=Private&label=family&limit=1", &privateAssetsPage)
+	if privateAssetsPage.Total != 1 || len(privateAssetsPage.Assets) != 1 || privateAssetsPage.Assets[0].AssetID != assets[0].AssetID {
+		t.Fatalf("filtered assets = %#v, want triaged asset", privateAssetsPage)
+	}
+	var emptyPage AssetPageProjection
+	getJSON(t, ts.URL+"/api/assets?status=Triage&limit=1", &emptyPage)
+	if emptyPage.Total != 0 || len(emptyPage.Assets) != 0 {
+		t.Fatalf("triage filtered assets after review = %#v, want empty page", emptyPage)
+	}
+	var labels []LabelProjection
+	getJSON(t, ts.URL+"/api/labels", &labels)
+	if len(labels) != 1 || labels[0].DisplayLabel != "Family" || labels[0].AssetCount != 1 {
+		t.Fatalf("labels = %#v, want Family count 1", labels)
+	}
+	deleteJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID+"/labels", map[string]string{"label": "Family"}, http.StatusOK)
+	getJSON(t, ts.URL+"/api/assets/"+assets[0].AssetID, &detail)
+	if len(detail.Labels) != 0 {
+		t.Fatalf("asset labels after delete = %#v, want none", detail.Labels)
 	}
 	var metadataSummary MetadataSummaryProjection
 	getJSON(t, ts.URL+"/api/metadata/summary", &metadataSummary)
@@ -1023,6 +1156,27 @@ func postJSONInto(t *testing.T, url string, body any, wantStatus int, out any) {
 		if err := json.NewDecoder(res.Body).Decode(out); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func deleteJSON(t *testing.T, url string, body any, wantStatus int) {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodDelete, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != wantStatus {
+		t.Fatalf("DELETE %s status = %d, want %d", url, res.StatusCode, wantStatus)
 	}
 }
 

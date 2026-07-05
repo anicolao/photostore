@@ -1,4 +1,4 @@
-import type { AcquiredFile, DatedPhotoResponse, HistoricalInventory, Job, MetadataPhoto, MetadataSummary, ObjectMetadata, ObjectNavigation, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
+import type { AcquiredFile, Asset, AssetDetail, AssetNavigation, AssetPage, AssetSource, DatedPhotoResponse, HistoricalInventory, Job, LabelSummary, MetadataPhoto, MetadataSummary, ObjectMetadata, ObjectNavigation, PhotoDateBucketResponse, ScanProjection, ScanReport, SourceRoot, StoreSummary } from './types';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -134,4 +134,61 @@ export function getDatedPhotos(year: string, month: string, day: string): Promis
 
 export function getUndatedPhotos(): Promise<DatedPhotoResponse> {
   return request('/api/photos/undated');
+}
+
+export function getAssets(params = new URLSearchParams()): Promise<AssetPage> {
+  const query = params.toString();
+  return request(query ? `/api/assets?${query}` : '/api/assets');
+}
+
+export function getAsset(assetID: string): Promise<AssetDetail> {
+  return request(`/api/assets/${assetID}`);
+}
+
+export function getAssetNavigation(assetID: string, params = new URLSearchParams()): Promise<AssetNavigation> {
+  const query = params.toString();
+  return request(query ? `/api/assets/${assetID}/navigation?${query}` : `/api/assets/${assetID}/navigation`);
+}
+
+export function getAssetSources(assetID: string): Promise<AssetSource[]> {
+  return request(`/api/assets/${assetID}/sources`);
+}
+
+export function getLabels(): Promise<LabelSummary[]> {
+  return request('/api/labels');
+}
+
+export function setAssetQuality(assetID: string, quality: Asset['quality']): Promise<{ ok: boolean }> {
+  return request(`/api/assets/${assetID}/quality`, {
+    method: 'POST',
+    body: JSON.stringify({ quality })
+  });
+}
+
+export function setAssetStatus(assetID: string, status: Asset['status']): Promise<{ ok: boolean }> {
+  return request(`/api/assets/${assetID}/status`, {
+    method: 'POST',
+    body: JSON.stringify({ status })
+  });
+}
+
+export function setAssetVisibility(assetID: string, visibility: Asset['visibility']): Promise<{ ok: boolean }> {
+  return request(`/api/assets/${assetID}/visibility`, {
+    method: 'POST',
+    body: JSON.stringify({ visibility })
+  });
+}
+
+export function applyAssetLabel(assetID: string, label: string): Promise<{ ok: boolean }> {
+  return request(`/api/assets/${assetID}/labels`, {
+    method: 'POST',
+    body: JSON.stringify({ label })
+  });
+}
+
+export function removeAssetLabel(assetID: string, label: string): Promise<{ ok: boolean }> {
+  return request(`/api/assets/${assetID}/labels`, {
+    method: 'DELETE',
+    body: JSON.stringify({ label })
+  });
 }

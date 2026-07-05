@@ -28,6 +28,7 @@ import (
 )
 
 const schemaVersion = 1
+const mainProjectionVersion = 2
 const progressCountPrefix = "\x1fphotostore-progress-count\x1f"
 
 var deterministicIDCounter atomic.Uint64
@@ -168,7 +169,16 @@ func Open(root string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	if err := st.replayUnappliedEvents(); err != nil {
+	if err := st.withEventLogLock(func() error {
+		if err := st.ensureMainProjectionVersion(); err != nil {
+			return err
+		}
+		return st.replayUnappliedEventsLocked()
+	}); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := st.drainAssetCreationRequired(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -284,7 +294,7 @@ func (s *Store) AcquireInventory(path, label, group string) (string, error) {
 		return "", err
 	}
 	if !s.contentAddressExists(contentRef) {
-		if err := s.materialize(objID, filepath.ToSlash(key), contentRef); err != nil {
+		if _, err := s.materialize(objID, filepath.ToSlash(key), contentRef); err != nil {
 			return "", err
 		}
 	}
@@ -334,6 +344,10 @@ func (s *Store) ResumeSourceScan(scanID string, progress ProgressFunc) (string, 
 		return "", err
 	}
 	if err := s.scanSourceRootFiles(scanID, roots, processed, report, progress, ScanOptions{}); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
+		return "", err
+	}
+	if err := s.drainAssetCreationRequired(); err != nil {
 		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
@@ -409,6 +423,10 @@ func (s *Store) ScanSourceRootsWithOptions(sourceRootIDs []string, progress Prog
 	}
 	report := &ScanReport{ScanID: scanID, SourceRootsScanned: len(roots)}
 	if err := s.scanSourceRootFiles(scanID, roots, nil, report, progress, opts); err != nil {
+		_ = s.appendScanFailed(scanID, report, err)
+		return "", err
+	}
+	if err := s.drainAssetCreationRequired(); err != nil {
 		_ = s.appendScanFailed(scanID, report, err)
 		return "", err
 	}
@@ -737,6 +755,9 @@ func (s *Store) ScanInventoryWithProgress(invID, invType string, exts []string, 
 			report.SourceFileAcquireFailures++
 		}
 	}
+	if err := s.drainAssetCreationRequired(); err != nil {
+		return "", err
+	}
 	if err := s.writeReport(report); err != nil {
 		return "", err
 	}
@@ -772,6 +793,14 @@ func (s *Store) initSchema() error {
 		`create table if not exists historical_matches(content_ref text, stored_object_id text, historical_inventory_id text, inventory_entry_id text)`,
 		`create table if not exists historical_seen_links(source_occurrence_id text primary key, historical_inventory_id text, inventory_entry_id text, content_ref text, link_event_id text)`,
 		`create table if not exists asset_projection(asset_projection_id text primary key, content_ref text unique, representative_stored_object_id text, asset_kind text)`,
+		`create table if not exists asset_creation_required(content_ref text primary key, stored_object_id text, source_occurrence_id text, scan_id text, required_event_id text, required_at_ms integer)`,
+		`create table if not exists assets(asset_id text primary key, content_ref text unique, representative_stored_object_id text, original_filename text, first_source_occurrence_id text, first_scan_id text, created_event_id text, created_at_ms integer)`,
+		`create table if not exists asset_versions(asset_version_id text primary key, asset_id text, role text, stored_object_id text, content_ref text, source_occurrence_id text)`,
+		`create table if not exists asset_quality(asset_id text primary key, quality text, set_event_id text, set_at_ms integer)`,
+		`create table if not exists asset_status(asset_id text primary key, status text, set_event_id text, set_at_ms integer)`,
+		`create table if not exists asset_visibility(asset_id text primary key, visibility text, set_event_id text, set_at_ms integer)`,
+		`create table if not exists asset_labels(asset_id text, normalized_label text, display_label text, applied_event_id text, applied_at_ms integer, primary key(asset_id, normalized_label))`,
+		`create table if not exists label_catalog(normalized_label text primary key, display_label text, asset_count integer, last_applied_at_ms integer)`,
 		`create table if not exists scans(scan_id text primary key, status text, started_at_ms integer, completed_at_ms integer, stats_json text)`,
 		`create table if not exists content_metadata(content_ref text, extractor_name text, extractor_version integer, metadata_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, extracted_at_ms integer, fields_json text, warnings_json text, primary key(content_ref, extractor_name, extractor_version))`,
 		`create table if not exists content_metadata_failures(content_ref text, extractor_name text, extractor_version integer, failure_event_id text, stored_object_id text, source_occurrence_id text, scan_id text, failed_at_ms integer, error_json text, primary key(content_ref, extractor_name, extractor_version))`,
@@ -787,12 +816,6 @@ func (s *Store) initSchema() error {
 	if err := s.ensureProjectionStateColumns(); err != nil {
 		return err
 	}
-	if err := s.rebuildPhotoCaptureTimeProjection(); err != nil {
-		return err
-	}
-	if err := s.rebuildDuplicateDeduplicationProjection(); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -802,8 +825,9 @@ func (s *Store) ensureProjectionStateColumns() error {
 		return err
 	}
 	for name, typ := range map[string]string{
-		"log_path":    "text",
-		"next_offset": "integer",
+		"log_path":           "text",
+		"next_offset":        "integer",
+		"projection_version": "integer",
 	} {
 		if cols[name] {
 			continue
@@ -813,6 +837,72 @@ func (s *Store) ensureProjectionStateColumns() error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) ensureMainProjectionVersion() error {
+	var version sql.NullInt64
+	err := s.DB.QueryRow(`select projection_version from projection_state where projection_name = ?`, "main").Scan(&version)
+	if err == nil {
+		if version.Valid && version.Int64 == mainProjectionVersion {
+			return nil
+		}
+		return s.resetMainProjection()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var applied int
+	if err := s.DB.QueryRow(`select count(*) from events_applied`).Scan(&applied); err != nil {
+		return err
+	}
+	if applied == 0 {
+		return nil
+	}
+	return s.resetMainProjection()
+}
+
+func (s *Store) resetMainProjection() error {
+	tables := []string{
+		"events_applied",
+		"projection_state",
+		"source_roots",
+		"stored_objects",
+		"source_content_links",
+		"verified_hashes",
+		"content_addresses",
+		"source_occurrences",
+		"source_root_scans",
+		"historical_inventories",
+		"historical_inventory_scans",
+		"historical_matches",
+		"historical_seen_links",
+		"asset_projection",
+		"asset_creation_required",
+		"assets",
+		"asset_versions",
+		"asset_quality",
+		"asset_status",
+		"asset_visibility",
+		"asset_labels",
+		"label_catalog",
+		"scans",
+		"content_metadata",
+		"content_metadata_failures",
+		"metadata_issues",
+		"photo_capture_times",
+		"duplicate_deduplications",
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, table := range tables {
+		if _, err := tx.Exec(`delete from ` + table); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) tableColumns(table string) (map[string]bool, error) {
@@ -840,7 +930,17 @@ func (s *Store) appendEvent(eventType string, causationID *string, correlationID
 func (s *Store) appendEventReturnID(eventType string, causationID *string, correlationID *string, payload map[string]any) (string, error) {
 	s.eventMu.Lock()
 	defer s.eventMu.Unlock()
-	ev := Event{
+	ev := newEvent(eventType, causationID, correlationID, payload)
+	if err := s.withEventLogLock(func() error {
+		return s.appendPreparedEventLocked(ev)
+	}); err != nil {
+		return "", err
+	}
+	return ev.EventID, nil
+}
+
+func newEvent(eventType string, causationID *string, correlationID *string, payload map[string]any) Event {
+	return Event{
 		EventID:       newID("evt"),
 		EventType:     eventType,
 		SchemaVersion: schemaVersion,
@@ -855,19 +955,38 @@ func (s *Store) appendEventReturnID(eventType string, causationID *string, corre
 		CorrelationID: correlationID,
 		Payload:       payload,
 	}
-	if err := s.withEventLogLock(func() error {
-		if err := s.writeEvent(ev); err != nil {
-			return err
-		}
-		nextOffset, err := s.eventLogSize()
-		if err != nil {
-			return err
-		}
-		return s.applyEventAt(ev, nextOffset)
-	}); err != nil {
-		return "", err
+}
+
+func (s *Store) appendPreparedEventLocked(ev Event) error {
+	if err := s.writeEvent(ev); err != nil {
+		return err
 	}
-	return ev.EventID, nil
+	nextOffset, err := s.eventLogSize()
+	if err != nil {
+		return err
+	}
+	return s.applyEventAt(ev, nextOffset)
+}
+
+func (s *Store) appendPreparedEventsLocked(events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	nextOffsets, err := s.writeEvents(events)
+	if err != nil {
+		return err
+	}
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, ev := range events {
+		if err := applyEventInTx(tx, ev, nextOffsets[i], true); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func hostname() string {
@@ -893,20 +1012,38 @@ func (s *Store) withEventLogLock(fn func() error) error {
 }
 
 func (s *Store) writeEvent(ev Event) error {
+	_, err := s.writeEvents([]Event{ev})
+	return err
+}
+
+func (s *Store) writeEvents(events []Event) ([]int64, error) {
 	path := filepath.Join(s.Root, "events", "events.jsonl")
+	offset, err := s.eventLogSize()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
-	b, err := json.Marshal(ev)
-	if err != nil {
-		return err
+	nextOffsets := make([]int64, 0, len(events))
+	for _, ev := range events {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return nil, err
+		}
+		line := append(b, '\n')
+		if _, err := f.Write(line); err != nil {
+			return nil, err
+		}
+		offset += int64(len(line))
+		nextOffsets = append(nextOffsets, offset)
 	}
-	if _, err := f.Write(append(b, '\n')); err != nil {
-		return err
+	if err := f.Sync(); err != nil {
+		return nil, err
 	}
-	return f.Sync()
+	return nextOffsets, nil
 }
 
 func (s *Store) replayUnappliedEvents() error {
@@ -939,16 +1076,26 @@ func (s *Store) replayUnappliedEventsLocked() error {
 	}
 	offset := cursor.NextOffset
 	r := bufio.NewReaderSize(f, 1024*1024)
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	appliedCount, err := eventsAppliedCount(tx)
+	if err != nil {
+		return err
+	}
+	skipAppliedCheck := cursor.NextOffset == 0 && appliedCount == 0
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return err
 		}
 		if err == io.EOF && line == "" {
-			return nil
+			return tx.Commit()
 		}
 		if err == io.EOF && !strings.HasSuffix(line, "\n") {
-			return nil
+			return tx.Commit()
 		}
 		nextOffset := offset + int64(len(line))
 		offset = nextOffset
@@ -960,7 +1107,7 @@ func (s *Store) replayUnappliedEventsLocked() error {
 		if err := json.Unmarshal([]byte(trimmed), &ev); err != nil {
 			return err
 		}
-		if err := s.applyEventAt(ev, nextOffset); err != nil {
+		if err := applyEventInTx(tx, ev, nextOffset, skipAppliedCheck); err != nil {
 			return err
 		}
 	}
@@ -1005,25 +1152,43 @@ func (s *Store) applyEvent(ev Event) error {
 }
 
 func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
-	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
 	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var applied int
-	if err := tx.QueryRow(`select count(*) from events_applied where event_id = ?`, ev.EventID).Scan(&applied); err != nil {
+	if err := applyEventInTx(tx, ev, nextOffset, false); err != nil {
 		return err
 	}
-	if applied > 0 {
-		if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
+	return tx.Commit()
+}
+
+func eventsAppliedCount(tx *sql.Tx) (int, error) {
+	var count int
+	if err := tx.QueryRow(`select count(*) from events_applied`).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func applyEventInTx(tx *sql.Tx, ev Event, nextOffset int64, skipAppliedCheck bool) error {
+	pj := func(k string) string { return mustJSON(ev.Payload[k]) }
+	if !skipAppliedCheck {
+		var applied int
+		if err := tx.QueryRow(`select count(*) from events_applied where event_id = ?`, ev.EventID).Scan(&applied); err != nil {
 			return err
 		}
-		return tx.Commit()
+		if applied > 0 {
+			if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
+				return err
+			}
+			return nil
+		}
 	}
 	if _, err := tx.Exec(`insert into events_applied(event_id,event_type,recorded_at_ms) values(?,?,?)`, ev.EventID, ev.EventType, ev.RecordedAtMS); err != nil {
 		return err
 	}
+	var err error
 	switch ev.EventType {
 	case "SourceRootRegistered":
 		_, err = tx.Exec(`insert or ignore into source_roots values(?,?,?,?,?)`, str(ev.Payload["source_root_id"]), str(ev.Payload["root_path"]), str(ev.Payload["label"]), str(ev.Payload["source_type"]), pj("scan_policy"))
@@ -1053,6 +1218,28 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 		ref := str(ev.Payload["content_ref"])
 		algo, hash, size := parseContentRef(ref)
 		_, err = tx.Exec(`insert or ignore into content_addresses values(?,?,?,?,?,?)`, ref, algo, hash, size, casKey(ref), ev.EventID)
+		if err == nil {
+			_, err = tx.Exec(`
+				insert or ignore into asset_creation_required(content_ref, stored_object_id, source_occurrence_id, scan_id, required_event_id, required_at_ms)
+				select ?, ?, scl.source_occurrence_id, so.scan_id, ?, ?
+				from stored_objects stored
+				join source_content_links scl on scl.stored_object_id = stored.stored_object_id and scl.content_ref = ?
+				join source_occurrences so on so.source_occurrence_id = scl.source_occurrence_id
+				where stored.stored_object_id = ?
+					and stored.purpose = 'source_media'
+					and not exists (select 1 from assets a where a.content_ref = ?)
+				order by so.source_event_id
+				limit 1`, ref, str(ev.Payload["stored_object_id"]), ev.EventID, ev.RecordedAtMS, ref, str(ev.Payload["stored_object_id"]), ref)
+		}
+	case "AssetCreated":
+		initial := mapValue(ev.Payload["initial_version"])
+		_, err = tx.Exec(`insert or ignore into assets values(?,?,?,?,?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["content_ref"]), str(initial["stored_object_id"]), filenameForAsset(tx, str(initial["source_occurrence_id"])), str(initial["source_occurrence_id"]), str(ev.Payload["scan_id"]), ev.EventID, ev.RecordedAtMS)
+		if err == nil {
+			_, err = tx.Exec(`insert or ignore into asset_versions values(?,?,?,?,?,?)`, str(initial["asset_version_id"]), str(ev.Payload["asset_id"]), str(initial["role"]), str(initial["stored_object_id"]), str(ev.Payload["content_ref"]), str(initial["source_occurrence_id"]))
+		}
+		if err == nil {
+			_, err = tx.Exec(`delete from asset_creation_required where content_ref = ?`, str(ev.Payload["content_ref"]))
+		}
 	case "HistoricalInventoryScanRequested":
 		_, err = tx.Exec(`insert or ignore into historical_inventory_scans values(?,?,?,?,?,?,?)`, str(ev.Payload["scan_id"]), str(ev.Payload["historical_inventory_id"]), str(ev.Payload["inventory_type"]), pj("parser"), pj("filter"), pj("path_resolver"), ev.EventID)
 	case "HistoricalInventoryOccurrenceLinked":
@@ -1077,6 +1264,32 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 		extractor := mapValue(ev.Payload["extractor"])
 		issue := mapValue(ev.Payload["issue"])
 		_, err = tx.Exec(`insert or ignore into metadata_issues values(?,?,?,?,?,?,?,?,?,?,?)`, ev.EventID, str(ev.Payload["content_ref"]), str(ev.Payload["stored_object_id"]), str(ev.Payload["source_occurrence_id"]), str(ev.Payload["scan_id"]), str(extractor["name"]), int64Value(extractor["version"]), int64Value(ev.Payload["detected_at_ms"]), str(issue["type"]), str(issue["severity"]), mustJSON(ev.Payload))
+	case "QualityLabelSet":
+		_, err = tx.Exec(`insert or replace into asset_quality values(?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["quality"]), ev.EventID, ev.RecordedAtMS)
+		if err == nil {
+			_, err = tx.Exec(`
+				insert or replace into asset_status(asset_id, status, set_event_id, set_at_ms)
+				select ?, 'Reviewed', ?, ?
+				where coalesce((select status from asset_status where asset_id = ?), 'Triage') = 'Triage'`,
+				str(ev.Payload["asset_id"]), ev.EventID, ev.RecordedAtMS, str(ev.Payload["asset_id"]))
+		}
+	case "AssetStatusSet":
+		_, err = tx.Exec(`insert or replace into asset_status values(?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["status"]), ev.EventID, ev.RecordedAtMS)
+	case "AssetVisibilitySet":
+		_, err = tx.Exec(`insert or replace into asset_visibility values(?,?,?,?)`, str(ev.Payload["asset_id"]), str(ev.Payload["visibility"]), ev.EventID, ev.RecordedAtMS)
+	case "AssetLabelApplied":
+		label := str(ev.Payload["label"])
+		normalized := normalizeAssetLabel(label)
+		_, err = tx.Exec(`insert or replace into asset_labels values(?,?,?,?,?)`, str(ev.Payload["asset_id"]), normalized, label, ev.EventID, ev.RecordedAtMS)
+		if err == nil {
+			err = refreshLabelCatalog(tx, normalized)
+		}
+	case "AssetLabelRemoved":
+		normalized := normalizeAssetLabel(str(ev.Payload["label"]))
+		_, err = tx.Exec(`delete from asset_labels where asset_id = ? and normalized_label = ?`, str(ev.Payload["asset_id"]), normalized)
+		if err == nil {
+			err = refreshLabelCatalog(tx, normalized)
+		}
 	case "DuplicateSourceObjectDeduplicated":
 		strategy := mapValue(ev.Payload["strategy"])
 		storage := mapValue(ev.Payload["storage"])
@@ -1092,11 +1305,11 @@ func (s *Store) applyEventAt(ev Event, nextOffset int64) error {
 	if err := advanceProjectionCursor(tx, ev, nextOffset); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func advanceProjectionCursor(tx *sql.Tx, ev Event, nextOffset int64) error {
-	_, err := tx.Exec(`insert or replace into projection_state(projection_name,log_path,next_offset,event_id,recorded_at_ms) values(?,?,?,?,?)`, "main", "events/events.jsonl", nextOffset, ev.EventID, ev.RecordedAtMS)
+	_, err := tx.Exec(`insert or replace into projection_state(projection_name,log_path,next_offset,event_id,recorded_at_ms,projection_version) values(?,?,?,?,?,?)`, "main", "events/events.jsonl", nextOffset, ev.EventID, ev.RecordedAtMS, mainProjectionVersion)
 	return err
 }
 
@@ -1106,6 +1319,148 @@ func rowsAffected(result sql.Result) int64 {
 		return 0
 	}
 	return rows
+}
+
+func filenameForAsset(tx *sql.Tx, sourceOccurrenceID string) string {
+	var relativePath string
+	var path string
+	err := tx.QueryRow(`select coalesce(relative_path, ''), coalesce(path, '') from source_occurrences where source_occurrence_id = ?`, sourceOccurrenceID).Scan(&relativePath, &path)
+	if err != nil {
+		return ""
+	}
+	return filenameForProjection(relativePath, path)
+}
+
+func normalizeAssetLabel(label string) string {
+	return strings.ToLower(strings.TrimSpace(label))
+}
+
+func refreshLabelCatalog(tx *sql.Tx, normalized string) error {
+	if normalized == "" {
+		return nil
+	}
+	var count int
+	var display sql.NullString
+	var last sql.NullInt64
+	if err := tx.QueryRow(`select count(*), max(display_label), max(applied_at_ms) from asset_labels where normalized_label = ?`, normalized).Scan(&count, &display, &last); err != nil {
+		return err
+	}
+	if count == 0 {
+		_, err := tx.Exec(`delete from label_catalog where normalized_label = ?`, normalized)
+		return err
+	}
+	_, err := tx.Exec(`insert or replace into label_catalog values(?,?,?,?)`, normalized, display.String, count, last.Int64)
+	return err
+}
+
+func (s *Store) SetAssetQuality(assetID, quality string) error {
+	if !validAssetQuality(quality) {
+		return fmt.Errorf("unsupported asset quality %q", quality)
+	}
+	contentRef, err := s.assetContentRef(assetID)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent("QualityLabelSet", nil, nil, map[string]any{
+		"asset_id":    assetID,
+		"content_ref": contentRef,
+		"quality":     quality,
+	})
+}
+
+func (s *Store) SetAssetStatus(assetID, status string) error {
+	if !validAssetStatus(status) {
+		return fmt.Errorf("unsupported asset status %q", status)
+	}
+	contentRef, err := s.assetContentRef(assetID)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent("AssetStatusSet", nil, nil, map[string]any{
+		"asset_id":    assetID,
+		"content_ref": contentRef,
+		"status":      status,
+	})
+}
+
+func (s *Store) SetAssetVisibility(assetID, visibility string) error {
+	if !validAssetVisibility(visibility) {
+		return fmt.Errorf("unsupported asset visibility %q", visibility)
+	}
+	contentRef, err := s.assetContentRef(assetID)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent("AssetVisibilitySet", nil, nil, map[string]any{
+		"asset_id":    assetID,
+		"content_ref": contentRef,
+		"visibility":  visibility,
+	})
+}
+
+func (s *Store) ApplyAssetLabel(assetID, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return errors.New("label is required")
+	}
+	contentRef, err := s.assetContentRef(assetID)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent("AssetLabelApplied", nil, nil, map[string]any{
+		"asset_id":    assetID,
+		"content_ref": contentRef,
+		"label":       label,
+	})
+}
+
+func (s *Store) RemoveAssetLabel(assetID, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return errors.New("label is required")
+	}
+	contentRef, err := s.assetContentRef(assetID)
+	if err != nil {
+		return err
+	}
+	return s.appendEvent("AssetLabelRemoved", nil, nil, map[string]any{
+		"asset_id":    assetID,
+		"content_ref": contentRef,
+		"label":       label,
+	})
+}
+
+func (s *Store) assetContentRef(assetID string) (string, error) {
+	var contentRef string
+	err := s.DB.QueryRow(`select content_ref from assets where asset_id = ?`, assetID).Scan(&contentRef)
+	return contentRef, err
+}
+
+func validAssetQuality(value string) bool {
+	switch value {
+	case "Unrated", "Best", "Good", "Poor":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAssetStatus(value string) bool {
+	switch value {
+	case "Triage", "Reviewed":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAssetVisibility(value string) bool {
+	switch value {
+	case "Normal", "Private":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRootID, sourceKind, path, rel, invID, entryID string, report *ScanReport, reportMu *sync.Mutex) error {
@@ -1166,7 +1521,7 @@ func (s *Store) acquireSourceFile(scanID string, causationID *string, sourceRoot
 		})
 	}
 	if !existed {
-		if err := s.materialize(objID, filepath.ToSlash(key), ref); err != nil {
+		if _, err := s.materialize(objID, filepath.ToSlash(key), ref); err != nil {
 			s.contentMu.Unlock()
 			return err
 		}
@@ -1189,25 +1544,25 @@ func withReportLock(mu *sync.Mutex, fn func()) {
 	fn()
 }
 
-func (s *Store) materialize(objID, acquiredKey, ref string) error {
+func (s *Store) materialize(objID, acquiredKey, ref string) (string, error) {
 	src := filepath.Join(s.Root, filepath.FromSlash(acquiredKey))
 	dst := filepath.Join(s.Root, filepath.FromSlash(casKey(ref)))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := os.Stat(dst); err == nil {
-		return nil
+		return "", nil
 	}
 	if err := os.Link(src, dst); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return nil
+			return "", nil
 		}
-		return err
+		return "", err
 	}
 	if err := chmodCompleteFile(dst); err != nil {
-		return err
+		return "", err
 	}
-	return s.appendEvent("ContentAddressMaterialized", nil, nil, map[string]any{
+	return s.appendEventReturnID("ContentAddressMaterialized", nil, nil, map[string]any{
 		"stored_object_id": objID,
 		"content_ref":      ref,
 		"materialization": map[string]any{
@@ -1215,6 +1570,71 @@ func (s *Store) materialize(objID, acquiredKey, ref string) error {
 			"created": true,
 		},
 	})
+}
+
+type pendingAssetCreation struct {
+	ContentRef         string
+	StoredObjectID     string
+	SourceOccurrenceID string
+	ScanID             string
+	RequiredEventID    string
+}
+
+func (s *Store) drainAssetCreationRequired() error {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
+	return s.withEventLogLock(func() error {
+		pendingRows, err := s.assetCreationRequiredRows()
+		if err != nil {
+			return err
+		}
+		events := make([]Event, 0, len(pendingRows))
+		for _, pending := range pendingRows {
+			causationID := pending.RequiredEventID
+			correlationID := pending.ScanID
+			events = append(events, newEvent("AssetCreated", &causationID, &correlationID, map[string]any{
+				"scan_id":     pending.ScanID,
+				"asset_id":    newID("asset"),
+				"content_ref": pending.ContentRef,
+				"initial_version": map[string]any{
+					"asset_version_id":     newID("av"),
+					"role":                 "original",
+					"stored_object_id":     pending.StoredObjectID,
+					"source_occurrence_id": pending.SourceOccurrenceID,
+				},
+				"defaults": map[string]any{
+					"quality":    "Unrated",
+					"status":     "Triage",
+					"visibility": "Normal",
+				},
+				"trigger": map[string]any{
+					"type":     "ContentAddressMaterialized",
+					"event_id": pending.RequiredEventID,
+				},
+			}))
+		}
+		return s.appendPreparedEventsLocked(events)
+	})
+}
+
+func (s *Store) assetCreationRequiredRows() ([]pendingAssetCreation, error) {
+	rows, err := s.DB.Query(`
+		select content_ref, stored_object_id, source_occurrence_id, scan_id, required_event_id
+		from asset_creation_required
+		order by required_at_ms, required_event_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pendingRows []pendingAssetCreation
+	for rows.Next() {
+		var pending pendingAssetCreation
+		if err := rows.Scan(&pending.ContentRef, &pending.StoredObjectID, &pending.SourceOccurrenceID, &pending.ScanID, &pending.RequiredEventID); err != nil {
+			return nil, err
+		}
+		pendingRows = append(pendingRows, pending)
+	}
+	return pendingRows, rows.Err()
 }
 
 func (s *Store) contentAddressExists(ref string) bool {
