@@ -128,6 +128,20 @@ test('asset triage labels and filters assets', async ({ page }, testInfo) => {
         await expect(page.getByTestId('asset-strip-link').first()).toHaveAttribute('href', /\/assets\/asset_.+has_date=1.+min_megapixels=1/);
         await expect(page.getByTestId('asset-strip-link').last()).toHaveAttribute('style', /aspect-ratio:\s*1000 \/ 2000/);
         await expect(page.getByTestId('asset-context-strip').locator('img')).toHaveCount(3);
+        const stripFit = await page.evaluate(() => {
+          const current = document.querySelector('[data-testid="asset-strip-current"]');
+          const portrait = [...document.querySelectorAll('[data-testid="asset-strip-link"]')].at(-1);
+          const portraitImage = portrait?.querySelector('img');
+          if (!(current instanceof HTMLElement) || !(portrait instanceof HTMLElement) || !(portraitImage instanceof HTMLElement)) return null;
+          const currentBox = current.getBoundingClientRect();
+          const portraitBox = portrait.getBoundingClientRect();
+          const imageBox = portraitImage.getBoundingClientRect();
+          return {
+            portraitIsNarrower: portraitBox.width < currentBox.width,
+            imageContained: imageBox.width <= portraitBox.width + 0.5 && imageBox.height <= portraitBox.height + 0.5,
+          };
+        });
+        expect(stripFit).toEqual({ portraitIsNarrower: true, imageContained: true });
       } },
       { spec: 'Asset source count is two', check: async () => await expect(page.getByTestId('asset-source-count')).toHaveText('2') },
       { spec: 'Source provenance lists original fixture path', check: async () => await expect(page.getByTestId('asset-sources')).toContainText('TRIAGE_A.JPG') },

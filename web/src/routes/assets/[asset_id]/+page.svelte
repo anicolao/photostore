@@ -119,6 +119,12 @@
     return '4 / 3';
   }
 
+  function stripSizeStyle(item: AssetNavigation['window'][number]) {
+    const height = 56;
+    const width = item.width && item.height ? Math.max(20, Math.round(height * item.width / item.height)) : 75;
+    return `width: ${width}px; height: ${height}px; aspect-ratio: ${stripAspectRatio(item)};`;
+  }
+
   function stripQualityClass(item: AssetNavigation['window'][number]) {
     return `quality-${item.quality.toLowerCase()}`;
   }
@@ -154,7 +160,7 @@
             href={item.view_url}
             title={item.filename}
             aria-current={item.asset_id === assetID ? 'true' : undefined}
-            style={`aspect-ratio: ${stripAspectRatio(item)};`}
+            style={stripSizeStyle(item)}
           >
             <img src={item.thumbnail_url} alt={item.filename}>
           </a>
@@ -315,9 +321,7 @@
 
   .context-strip a {
     box-sizing: border-box;
-    height: 52px;
-    min-width: 34px;
-    max-width: 92px;
+    flex: 0 0 auto;
     border: 3px solid #9aa0a6;
     border-radius: 6px;
     background: #111418;
@@ -352,6 +356,7 @@
     max-height: 100%;
     width: auto;
     height: auto;
+    object-fit: contain;
     display: block;
   }
 
